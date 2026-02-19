@@ -1,28 +1,49 @@
 # Session Log – 2026-02-18 / 2026-02-19
 
-Overview of changes and additions made during this session.
+Overview of changes and additions to the MCP Kanka server across two implementation phases.
+
+**Reference:** Full Cursor session transcript: `cursor_kanka_mcp_integration_from_mcpad.md` (exported 2/18/2026). That document captures the MCPaddition plan (from 00_Inbox/MCPDUMP) and its implementation.
 
 ---
 
 ## Summary
 
-This session added support for **Maps**, **Calendars**, **Events**, and **Timelines** to the MCP Kanka server, fixed calendar create/update format mismatches with the Kanka API, fixed map timestamp handling, and hardened `.gitignore` for sensitive and build artifacts.
+**Phase 1 – MCPaddition:** Implemented the MCPaddition feature plan. Added **family**, **item**, **tag** entity types; **parent_id / nesting** so entities can be nested under parents (items under items, locations under locations, maps under maps, etc.); **Item direct API** (items use `client._request()` since python-kanka has no item manager); sub-resource tools **manage_relations**, **manage_attributes**, **manage_organisation_members**.
+
+**Phase 2 – Module expansion:** Added **map**, **calendar**, **event**, **timeline** entity types; map sub-resources (**manage_map_markers**, **manage_map_groups**, **manage_map_layers**); **manage_calendar_reminders**; timeline sub-resources (**manage_timeline_eras**, **manage_timeline_elements**). Fixed Kanka API mismatches: calendar create (flat arrays) vs update (object arrays); map timestamps (API returns strings, not datetimes). Hardened `.gitignore` for `.cursor/`, caches, and logs.
 
 ---
 
-## New Entity Types
+## Nesting / Parent Support
 
-| Type      | CRUD | Notes                                                |
-|-----------|------|------------------------------------------------------|
-| **map**   | ✓    | Markers, groups, layers sub-resources                |
-| **calendar** | ✓ | Moons, reminders; Gregorian-style structure          |
-| **event** | ✓    | Date, location, calendar linkage                     |
-| **timeline** | ✓ | Eras and elements sub-resources                     |
+- **Items** – Items can be nested under a parent item via `parent_id` (maps to Kanka’s `item_id`).
+- **Locations, maps, organisations, notes, journals, quests, races, creatures, families, tags** – All support `parent_id` for nesting. The service maps `parent_id` to the correct API field (`item_id`, `map_id`, `location_id`, `organisation_id`, etc.) per type.
+- Create and update both accept `parent_id` for nested entities.
+
+---
+
+## Entity Types (Expanded)
+
+| Type        | CRUD | Notes                                                |
+|-------------|------|------------------------------------------------------|
+| **family**  | ✓    | Bloodlines, houses (from MCPaddition)                |
+| **item**    | ✓    | Items via direct API; nested under parent items      |
+| **tag**     | ✓    | Tags with colour (from MCPaddition)                  |
+| **map**     | ✓    | Markers, groups, layers sub-resources                |
+| **calendar**| ✓    | Moons, reminders; Gregorian-style structure          |
+| **event**   | ✓    | Date, location, calendar linkage                     |
+| **timeline**| ✓    | Eras and elements sub-resources                      |
 
 ---
 
 ## New MCP Tools
 
+**From MCPaddition:**
+- **manage_relations** – Create / update / delete / list relations between entities
+- **manage_attributes** – Create / update / delete / list / bulk-patch custom attributes
+- **manage_organisation_members** – Add / update / remove / list org members
+
+**From Module expansion:**
 - **manage_map_markers** – Create / update / delete / list map markers
 - **manage_map_groups** – Create / update / delete / list map groups
 - **manage_map_layers** – Create / update / delete / list map layers
@@ -102,9 +123,22 @@ Create a standard Gregorian calendar with Moon cycle:
 }
 ```
 
+### Nested item example
+
+Create an item under a parent item:
+
+```json
+{
+  "entity_type": "item",
+  "name": "Magic Sword",
+  "parent_id": 12345,
+  "entry": "A blade forged in dragon fire."
+}
+```
+
 ---
 
 ## Branch
 
 - **Branch:** `ModuleAddon`
-- **Status:** Ready to push
+- **Remote:** https://github.com/Wizard815/mcp-kanka
