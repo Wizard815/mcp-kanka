@@ -1,6 +1,6 @@
-# Session Log – 2026-02-18 / 2026-02-19
+# Session Log – 2026-02-18 / 2026-02-19 / 2026-02-19 (Session 2)
 
-Overview of changes and additions to the MCP Kanka server across two implementation phases.
+Overview of changes and additions to the MCP Kanka server across two implementation phases and a follow-up session.
 
 **Reference:** Full Cursor session transcript: `cursor_kanka_mcp_integration_from_mcpad.md` (exported 2/18/2026). That document captures the MCPaddition plan (from 00_Inbox/MCPDUMP) and its implementation.
 
@@ -11,6 +11,8 @@ Overview of changes and additions to the MCP Kanka server across two implementat
 **Phase 1 – MCPaddition:** Implemented the MCPaddition feature plan. Added **family**, **item**, **tag** entity types; **parent_id / nesting** so entities can be nested under parents (items under items, locations under locations, maps under maps, etc.); **Item direct API** (items use `client._request()` since python-kanka has no item manager); sub-resource tools **manage_relations**, **manage_attributes**, **manage_organisation_members**.
 
 **Phase 2 – Module expansion:** Added **map**, **calendar**, **event**, **timeline** entity types; map sub-resources (**manage_map_markers**, **manage_map_groups**, **manage_map_layers**); **manage_calendar_reminders**; timeline sub-resources (**manage_timeline_eras**, **manage_timeline_elements**). Fixed Kanka API mismatches: calendar create (flat arrays) vs update (object arrays); map timestamps (API returns strings, not datetimes). Hardened `.gitignore` for `.cursor/`, caches, and logs.
+
+**Phase 3 – 2026-02-19 (Session 2):** Added **birth/death/founded** support to `manage_calendar_reminders` via `event_type` (birth, death, founded) for Kanka’s age/foundation calculation ([docs](https://docs.kanka.io/en/latest/advanced/age.html)). Fixed calendar update: Kanka API accepts **flat arrays** for both create and update (`month_name`, `month_length`, `weekday`); `_prepare_calendar_structural_fields` now uses flat arrays for updates. Relaxed `pyproject.toml` `requires-python` to `>=3.10`. Fixed `manage_organisation_members` to use character type ID. **Known issue:** `moon_name` / `moon_fullmoon` triggers Kanka API 500 (“Undefined array key 0”)—add moons via the Kanka UI.
 
 ---
 
@@ -47,7 +49,7 @@ Overview of changes and additions to the MCP Kanka server across two implementat
 - **manage_map_markers** – Create / update / delete / list map markers
 - **manage_map_groups** – Create / update / delete / list map groups
 - **manage_map_layers** – Create / update / delete / list map layers
-- **manage_calendar_reminders** – Add entities to calendar dates (events, holidays)
+- **manage_calendar_reminders** – Add entities to calendar dates (events, holidays). Supports `event_type`: `birth`, `death`, or `founded` for age/foundation calculation.
 - **manage_timeline_eras** – Create / update / delete / list timeline eras
 - **manage_timeline_elements** – Create / update / delete / list elements within eras
 
@@ -57,10 +59,8 @@ Overview of changes and additions to the MCP Kanka server across two implementat
 
 ### 1. Calendar create vs update format (Kanka API)
 
-- **Create** expects flat arrays: `month_name`, `month_length`, `month_type`, `weekday`, `moon_name`, `moon_fullmoon`
-- **Update** expects object arrays: `months` (objects), `moons` (objects), `weekdays`
-
-Added `_prepare_calendar_structural_fields()` to convert between these formats automatically for both create and update.
+- **Create and update** both accept flat arrays: `month_name`, `month_length`, `month_type`, `weekday`, `moon_name`, `moon_fullmoon` (per Kanka API docs: “same body parameters”).
+- `_prepare_calendar_structural_fields()` uses flat arrays for both create and update.
 
 ### 2. Map timestamp handling
 
@@ -75,8 +75,8 @@ Added `_normalize_timestamp()` to handle both strings and datetime objects.
 
 | File | Changes |
 |------|---------|
-| `src/mcp_kanka/service.py` | Calendar structural conversion, map timestamp normalization |
-| `src/mcp_kanka/operations.py` | New entity types, manage tools, extra field keys |
+| `src/mcp_kanka/service.py` | Calendar structural conversion (flat arrays for create & update), map timestamp normalization, event_type (birth/death/founded), org member character type ID |
+| `src/mcp_kanka/operations.py` | New entity types, manage tools, extra field keys, event_type in calendar reminders |
 | `src/mcp_kanka/tools.py` | Handlers for new manage tools |
 | `src/mcp_kanka/__main__.py` | Tool registration and dispatch |
 | `src/mcp_kanka/types.py` | New entity types, map/event/timeline fields |
@@ -97,7 +97,7 @@ Added `_normalize_timestamp()` to handle both strings and datetime objects.
 
 ## Gregorian Calendar Example
 
-Create a standard Gregorian calendar with Moon cycle:
+Create a standard Gregorian calendar. *Note: `moon_name`/`moon_fullmoon` triggers a Kanka API 500—add moons via the Kanka UI after creation.*
 
 ```json
 {

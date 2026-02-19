@@ -550,8 +550,8 @@ class TestKankaService:
         assert "months" not in payload
         assert "moons" not in payload
 
-    def test_calendar_update_uses_object_arrays(self):
-        """Calendar update sends months and moons as object arrays."""
+    def test_calendar_update_uses_flat_arrays(self):
+        """Calendar update sends month_name, month_length, moon_name, moon_fullmoon (same as create)."""
         self.mock_client.entity.return_value = {
             "type": "Calendar",
             "child": {"id": 1, "entity_id": 99},
@@ -568,14 +568,9 @@ class TestKankaService:
         calls = self.mock_client._request.call_args_list
         patch_call = next(c for c in calls if c[0][0] in ("PUT", "PATCH"))
         payload = patch_call[1]["json"]
-        assert "months" in payload
-        assert payload["months"] == [
-            {"name": "Jan", "length": 31, "type": "standard"},
-            {"name": "Feb", "length": 28, "type": "standard"},
-        ]
-        assert "moons" in payload
-        assert payload["moons"] == [
-            {"name": "Luna", "fullmoon": "30", "offset": 0, "colour": ""},
-        ]
-        assert "month_name" not in payload
-        assert "moon_name" not in payload
+        assert "month_name" in payload
+        assert payload["month_name"] == ["Jan", "Feb"]
+        assert payload["month_length"] == [31, 28]
+        assert "moon_name" in payload
+        assert payload["moon_name"] == ["Luna"]
+        assert payload["moon_fullmoon"] == ["30"]

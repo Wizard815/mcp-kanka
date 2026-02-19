@@ -936,6 +936,10 @@ async def list_tools() -> list[types.Tool]:
                                 },
                                 "recurring_until": {"type": "integer"},
                                 "is_hidden": {"type": "boolean"},
+                                "event_type": {
+                                    "type": "string",
+                                    "description": "For age/foundation: 'birth', 'death', or 'founded'. Characters: birth/death. Locations/Orgs/Families: founded.",
+                                },
                             },
                             "required": ["action", "calendar_id"],
                         },

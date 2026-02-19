@@ -1631,6 +1631,7 @@ class KankaOperations:
                         recurring_periodicity=action_input.get("recurring_periodicity"),
                         recurring_until=action_input.get("recurring_until"),
                         is_hidden=action_input.get("is_hidden"),
+                        event_type=action_input.get("event_type"),
                     )
                     results.append(
                         {
@@ -1670,6 +1671,7 @@ class KankaOperations:
                             "recurring_periodicity",
                             "recurring_until",
                             "is_hidden",
+                            "event_type",
                         )
                         if k in action_input
                     }

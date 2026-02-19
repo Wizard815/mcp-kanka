@@ -1154,10 +1154,9 @@ class KankaService:
     ) -> dict[str, Any]:
         """Convert calendar months/weekdays/moons to API-expected format.
 
-        Kanka API uses different formats for create vs update:
-        - Create: flat arrays (month_name, month_length, month_type, weekday,
-          moon_name, moon_fullmoon)
-        - Update: object arrays (months, weekdays, moons)
+        Kanka API accepts flat arrays for both create and update:
+        - month_name, month_length, month_type, weekday
+        - moon_name, moon_fullmoon
         """
         result: dict[str, Any] = {}
 
@@ -1224,66 +1223,65 @@ class KankaService:
                 result["moon_fullmoon"] = mf_list[: len(mn_list)]
 
         else:
-            # ---- UPDATE: use object arrays ----
-            weekday = extra.get("weekday") or extra.get("weekdays")
+            # ---- UPDATE: use same flat arrays as create (API accepts both) ----
+            weekday = extra.get("weekdays") or extra.get("weekday")
             if isinstance(weekday, list | tuple) and len(weekday) >= 2:
-                result["weekdays"] = list(weekday)
+                result["weekday"] = list(weekday)
 
             months = extra.get("months")
-            if (
-                isinstance(months, list | tuple)
-                and months
-                and isinstance(months[0], dict)
-            ):
-                result["months"] = list(months)
+            if isinstance(months, list | tuple) and months:
+                # Convert objects -> flat arrays
+                mn, ml, mt = [], [], []
+                for m in months:
+                    if isinstance(m, dict):
+                        mn.append(m.get("name", ""))
+                        ml.append(m.get("length", 30))
+                        mt.append(m.get("type", "standard"))
+                if mn:
+                    result["month_name"] = mn
+                    result["month_length"] = ml
+                    result["month_type"] = mt
             elif extra.get("month_name") and extra.get("month_length"):
-                months_arr = []
-                ml = list(extra["month_length"])
-                mt = list(
+                result["month_name"] = list(extra["month_name"])
+                result["month_length"] = [int(x) for x in extra["month_length"]]
+                result["month_type"] = list(
                     extra.get("month_type") or ["standard"] * len(extra["month_name"])
                 )
-                for i, name in enumerate(extra["month_name"]):
-                    months_arr.append(
-                        {
-                            "name": str(name),
-                            "length": int(ml[i]) if i < len(ml) else 30,
-                            "type": str(mt[i]) if i < len(mt) else "standard",
-                        }
+                if len(result["month_type"]) < len(result["month_name"]):
+                    result["month_type"].extend(
+                        ["standard"]
+                        * (len(result["month_name"]) - len(result["month_type"]))
                     )
-                result["months"] = months_arr
 
             moons = extra.get("moons")
-            if (
-                isinstance(moons, list | tuple)
-                and moons
-                and isinstance(moons[0], dict)
-            ):
-                result["moons"] = list(moons)
+            if isinstance(moons, list | tuple) and moons:
+                mn, mf = [], []
+                for m in moons:
+                    if isinstance(m, dict):
+                        mn.append(m.get("name", ""))
+                        fm = m.get("fullmoon")
+                        mf.append(str(fm) if fm is not None else "30")
+                if mn:
+                    result["moon_name"] = mn
+                    result["moon_fullmoon"] = mf
             elif extra.get("moon_name"):
-                moons_arr = []
-                mf_raw = extra.get("moon_fullmoon")
-                if mf_raw is None:
-                    mf_list = ["30"]
-                elif not isinstance(mf_raw, list | tuple):
-                    mf_list = [str(mf_raw)]
-                else:
-                    mf_list = [str(x) for x in mf_raw]
-                mn_list = (
-                    list(extra["moon_name"])
-                    if isinstance(extra["moon_name"], list | tuple)
-                    else [str(extra["moon_name"])]
+                moon_names = extra["moon_name"]
+                mf_vals = extra.get("moon_fullmoon")
+                mn_list: list[str] = (
+                    [str(moon_names)]
+                    if isinstance(moon_names, str)
+                    else [str(x) for x in (moon_names or [])]
                 )
-                for i, name in enumerate(mn_list):
-                    fm = mf_list[i] if i < len(mf_list) else "30"
-                    moons_arr.append(
-                        {
-                            "name": str(name),
-                            "fullmoon": fm,
-                            "offset": 0,
-                            "colour": "",
-                        }
-                    )
-                result["moons"] = moons_arr
+                if mf_vals is None:
+                    mf_list: list[str] = ["30"]
+                elif not isinstance(mf_vals, list | tuple):
+                    mf_list = [str(mf_vals)]
+                else:
+                    mf_list = [str(x) for x in mf_vals]
+                if len(mf_list) < len(mn_list):
+                    mf_list.extend(["30"] * (len(mn_list) - len(mf_list)))
+                result["moon_name"] = [str(x) for x in mn_list]
+                result["moon_fullmoon"] = mf_list[: len(mn_list)]
 
         return result
 
@@ -1651,6 +1649,15 @@ class KankaService:
         self.client._request("DELETE", f"calendars/{calendar_id}")
         return True
 
+    def _resolve_event_type_id(self, event_type: str | int) -> int | None:
+        """Resolve event_type string or int to Kanka type_id.
+        Kanka: 1=founded, 2=birth, 3=death (per entity reminders API).
+        """
+        if isinstance(event_type, int):
+            return event_type if 1 <= event_type <= 3 else None
+        m = {"birth": 2, "death": 3, "founded": 1}
+        return m.get(str(event_type).lower().strip())
+
     def _get_calendar_type_id(self, calendar_entity_id: int) -> int:
         """Resolve calendar entity_id to type-specific id for API URLs."""
         entity_data = self.get_entity_by_id(calendar_entity_id)
@@ -1680,8 +1687,12 @@ class KankaService:
         recurring_periodicity: str | None = None,
         recurring_until: int | None = None,
         is_hidden: bool | None = None,
+        event_type: str | int | None = None,
     ) -> dict[str, Any]:
-        """Add an entity to a calendar date (creates reminder)."""
+        """Add an entity to a calendar date (creates reminder).
+        event_type: 'birth' (2), 'death' (3), or 'founded' (1) for age/foundation.
+        Characters: birth/death. Locations/Families/Orgs: founded.
+        """
         data: dict[str, Any] = {
             "calendar_id": self._get_calendar_type_id(calendar_id),
             "year": year,
@@ -1689,6 +1700,10 @@ class KankaService:
             "day": day,
             "length": length,
         }
+        if event_type is not None:
+            tid = self._resolve_event_type_id(event_type)
+            if tid is not None:
+                data["type_id"] = tid
         if name:
             data["name"] = name
         if comment:
@@ -1718,6 +1733,10 @@ class KankaService:
             if v is not None:
                 if k == "is_hidden":
                     data["visibility_id"] = 2 if v else 1
+                elif k == "event_type":
+                    tid = self._resolve_event_type_id(v)
+                    if tid is not None:
+                        data["type_id"] = tid
                 else:
                     data[k] = v
         resp = self.client._request(
@@ -1755,6 +1774,9 @@ class KankaService:
             "recurring_periodicity": data.get("recurring_periodicity"),
             "recurring_until": data.get("recurring_until"),
             "is_hidden": vis in (2, 3) if vis is not None else False,
+            "event_type": {1: "founded", 2: "birth", 3: "death"}.get(
+                data.get("type_id"), data.get("type_id")
+            ),
         }
 
     # ---- Event direct-API methods ----
@@ -2190,6 +2212,15 @@ class KankaService:
 
     # ---- Sub-resource: Organisation Members ----
 
+    def _get_character_type_id(self, character_entity_id: int) -> int:
+        """Resolve character entity_id to type-specific character id for API calls."""
+        entity_data = self.get_entity_by_id(character_entity_id)
+        if not entity_data or entity_data.get("entity_type") != "character":
+            raise ValueError(
+                f"Entity {character_entity_id} is not a character or not found"
+            )
+        return entity_data["id"]
+
     def list_org_members(self, organisation_id: int) -> list[dict[str, Any]]:
         """List members of an organisation. organisation_id is the type-specific ID."""
         entity_data = self.get_entity_by_id(organisation_id)
@@ -2212,15 +2243,18 @@ class KankaService:
         parent_id: int | None = None,
         pin_id: int | None = None,
     ) -> dict[str, Any]:
-        """Add a member to an organisation. organisation_id is entity_id."""
+        """Add a member to an organisation.
+        organisation_id and character_id are entity_ids; resolved to type ids for API.
+        """
         entity_data = self.get_entity_by_id(organisation_id)
         if not entity_data or entity_data["entity_type"] != "organization":
             raise ValueError(f"Entity {organisation_id} is not an organisation")
         org_type_id = entity_data["id"]
+        char_type_id = self._get_character_type_id(character_id)
 
         data: dict[str, Any] = {
             "organisation_id": org_type_id,
-            "character_id": character_id,
+            "character_id": char_type_id,
         }
         if role is not None:
             data["role"] = role
@@ -2247,16 +2281,20 @@ class KankaService:
         member_id: int,
         **fields: Any,
     ) -> dict[str, Any]:
-        """Update an organisation member."""
+        """Update an organisation member.
+        organisation_id and character_id (if provided) are entity_ids.
+        """
         entity_data = self.get_entity_by_id(organisation_id)
         if not entity_data or entity_data["entity_type"] != "organization":
             raise ValueError(f"Entity {organisation_id} is not an organisation")
         org_type_id = entity_data["id"]
 
         data: dict[str, Any] = {}
-        for key in ("character_id", "role", "status_id", "parent_id", "pin_id"):
+        for key in ("role", "status_id", "parent_id", "pin_id"):
             if key in fields and fields[key] is not None:
                 data[key] = fields[key]
+        if "character_id" in fields and fields["character_id"] is not None:
+            data["character_id"] = self._get_character_type_id(fields["character_id"])
         if "is_hidden" in fields and fields["is_hidden"] is not None:
             data["is_private"] = fields["is_hidden"]
 
