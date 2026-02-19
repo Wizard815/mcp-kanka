@@ -234,16 +234,21 @@ class TestFindEntities:
         mock_service = Mock()
         mock_get_service.return_value = mock_service
 
-        # Mock list results for all entity types
+        # Mock list results for all entity types (11 types total)
         # Since no entity_type is specified, it will search all types
         mock_service.list_entities.side_effect = [
             # Characters
             [Mock(id=1, entity_id=1, name="Alice Test", type="NPC")],
             # Creatures - empty
             [],
+            # Families - empty
+            [],
+            # Items - empty
+            [],
             # Locations
             [Mock(id=2, entity_id=2, name="Test Location", type="City")],
-            # Others empty
+            # Organizations, Races, Notes, Journals, Quests, Tags - empty
+            [],
             [],
             [],
             [],

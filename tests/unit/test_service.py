@@ -23,6 +23,7 @@ class TestKankaService:
         # Set up mock managers
         self.mock_client.characters = MagicMock()
         self.mock_client.creatures = MagicMock()
+        self.mock_client.families = MagicMock()
         self.mock_client.locations = MagicMock()
         self.mock_client.organisations = MagicMock()
         self.mock_client.races = MagicMock()
@@ -30,6 +31,8 @@ class TestKankaService:
         self.mock_client.journals = MagicMock()
         self.mock_client.quests = MagicMock()
         self.mock_client.tags = MagicMock()
+        # Items use direct API (_request), no SDK manager
+        self.mock_client._request = MagicMock()
 
     def test_initialization_missing_token(self):
         """Test initialization fails without token."""
@@ -65,12 +68,16 @@ class TestKankaService:
         # Set up list() to return appropriate results for each entity type
         self.mock_client.characters.list.return_value = [mock_char1, mock_char2]
         self.mock_client.creatures.list.return_value = []
+        self.mock_client.families.list.return_value = []
         self.mock_client.locations.list.return_value = [mock_loc]
         self.mock_client.organisations.list.return_value = []
         self.mock_client.races.list.return_value = []
         self.mock_client.notes.list.return_value = []
         self.mock_client.journals.list.return_value = []
         self.mock_client.quests.list.return_value = []
+        self.mock_client.tags.list.return_value = []
+        # Items use direct API
+        self.mock_client._request.return_value = {"data": []}
 
         # Test search without type filter
         results = self.service.search_entities("test query", limit=100)
@@ -167,19 +174,15 @@ class TestKankaService:
 
     def test_create_entity_basic(self):
         """Test creating a basic entity."""
-        # Mock created entity - set attributes properly
-        mock_entity = Mock()
-        mock_entity.id = 1
-        mock_entity.entity_id = 101
-        mock_entity.name = "Test Character"
-        mock_entity.type = "NPC"
-        mock_entity.is_private = False  # Public
-        mock_entity.tags = []
-        mock_entity.entry = "<p>Test description</p>"
-        mock_entity.created_at = datetime.now()
-        mock_entity.updated_at = datetime.now()
-        mock_entity.posts = None  # No posts by default
-        self.mock_client.characters.create.return_value = mock_entity
+        # Mock direct API response
+        self.mock_client._request.return_value = {
+            "data": {
+                "id": 1,
+                "entity_id": 101,
+                "name": "Test Character",
+                "type": "NPC",
+            }
+        }
 
         # Initialize tag cache to empty
         self.service._tag_cache = {}
@@ -197,12 +200,14 @@ class TestKankaService:
         assert result["name"] == "Test Character"
         assert result["mention"] == "[entity:101]"
 
-        # Check the call was made correctly
-        self.mock_client.characters.create.assert_called_once()
-        call_args = self.mock_client.characters.create.call_args[1]
-        assert call_args["name"] == "Test Character"
-        assert call_args["type"] == "NPC"
-        assert "<p>Test description</p>" in call_args["entry"]
+        # Check the direct API call was made correctly
+        self.mock_client._request.assert_called_once()
+        call_args = self.mock_client._request.call_args
+        assert call_args[0] == ("POST", "characters")
+        payload = call_args[1]["json"]
+        assert payload["name"] == "Test Character"
+        assert payload["type"] == "NPC"
+        assert "<p>Test description</p>" in payload["entry"]
 
     def test_create_entity_with_tags(self):
         """Test creating an entity with tags."""
@@ -219,17 +224,15 @@ class TestKankaService:
         self.mock_client.tags.list.return_value = [mock_tag1]
         self.mock_client.tags.create.return_value = mock_tag2
 
-        # Mock created entity
-        mock_entity = Mock()
-        mock_entity.id = 1
-        mock_entity.entity_id = 101
-        mock_entity.name = "Test Character"
-        mock_entity.tags = [1, 2]
-        mock_entity.entry = "<p>Test description</p>"  # Need entry for conversion
-        mock_entity.created_at = datetime.now()
-        mock_entity.updated_at = datetime.now()
-        mock_entity.posts = None  # No posts by default
-        self.mock_client.characters.create.return_value = mock_entity
+        # Mock direct API response for entity creation
+        self.mock_client._request.return_value = {
+            "data": {
+                "id": 1,
+                "entity_id": 101,
+                "name": "Test Character",
+                "type": None,
+            }
+        }
 
         # Initialize tag cache
         self.service._tag_cache = {}
@@ -243,9 +246,10 @@ class TestKankaService:
         self.mock_client.tags.list.assert_called()
         self.mock_client.tags.create.assert_called_once_with(name="warrior")
 
-        # Check entity was created with tag IDs
-        call_args = self.mock_client.characters.create.call_args[1]
-        assert call_args["tags"] == [1, 2]
+        # Check entity was created with tag IDs via direct API
+        call_args = self.mock_client._request.call_args
+        payload = call_args[1]["json"]
+        assert payload["tags"] == [1, 2]
 
     def test_update_entity(self):
         """Test updating an entity."""
@@ -259,8 +263,8 @@ class TestKankaService:
             }
         )
 
-        # Mock update
-        self.mock_client.characters.update.return_value = None
+        # Mock direct API response
+        self.mock_client._request.return_value = {"data": {}}
 
         # Test update
         result = self.service.update_entity(
@@ -268,9 +272,13 @@ class TestKankaService:
         )
 
         assert result is True
-        self.mock_client.characters.update.assert_called_once_with(
-            1, name="New Name", type="Updated NPC"  # The type-specific ID
-        )
+        # Verify direct API call with correct endpoint and payload
+        self.mock_client._request.assert_called_once()
+        call_args = self.mock_client._request.call_args
+        assert call_args[0] == ("PATCH", "characters/1")
+        payload = call_args[1]["json"]
+        assert payload["name"] == "New Name"
+        assert payload["type"] == "Updated NPC"
 
     def test_update_entity_not_found(self):
         """Test updating non-existent entity."""
@@ -514,3 +522,60 @@ class TestKankaService:
             assert call[1].get("lastSync") == last_sync_time
 
         assert len(entities) == 150
+
+    def test_calendar_create_uses_flat_arrays(self):
+        """Calendar create sends month_name, month_length, moon_name, moon_fullmoon as flat arrays."""
+        self.mock_client._request.return_value = {
+            "data": {"id": 1, "entity_id": 99, "name": "Test", "type": None}
+        }
+        self.service.create_entity(
+            "calendar",
+            "Test Calendar",
+            weekday=["Mon", "Tue"],
+            month_name=["Jan", "Feb"],
+            month_length=[31, 28],
+            moon_name=["Luna"],
+            moon_fullmoon=["30"],
+        )
+        call_args = self.mock_client._request.call_args
+        assert call_args[0][0] == "POST"
+        assert call_args[0][1] == "calendars"
+        payload = call_args[1]["json"]
+        assert "weekday" in payload
+        assert payload["weekday"] == ["Mon", "Tue"]
+        assert payload["month_name"] == ["Jan", "Feb"]
+        assert payload["month_length"] == [31, 28]
+        assert payload["moon_name"] == ["Luna"]
+        assert payload["moon_fullmoon"] == ["30"]
+        assert "months" not in payload
+        assert "moons" not in payload
+
+    def test_calendar_update_uses_object_arrays(self):
+        """Calendar update sends months and moons as object arrays."""
+        self.mock_client.entity.return_value = {
+            "type": "Calendar",
+            "child": {"id": 1, "entity_id": 99},
+        }
+        self.mock_client._request.return_value = {"data": {}}
+        self.service.update_entity(
+            99,
+            "Test Calendar",
+            month_name=["Jan", "Feb"],
+            month_length=[31, 28],
+            moon_name=["Luna"],
+            moon_fullmoon=["30"],
+        )
+        calls = self.mock_client._request.call_args_list
+        patch_call = next(c for c in calls if c[0][0] in ("PUT", "PATCH"))
+        payload = patch_call[1]["json"]
+        assert "months" in payload
+        assert payload["months"] == [
+            {"name": "Jan", "length": 31, "type": "standard"},
+            {"name": "Feb", "length": 28, "type": "standard"},
+        ]
+        assert "moons" in payload
+        assert payload["moons"] == [
+            {"name": "Luna", "fullmoon": "30", "offset": 0, "colour": ""},
+        ]
+        assert "month_name" not in payload
+        assert "moon_name" not in payload

@@ -27,34 +27,28 @@ class TestQuestFields:
 
     def test_create_quest_with_is_completed(self):
         """Test creating a quest with is_completed field."""
-        # Mock the create response
-        mock_quest = Mock()
-        mock_quest.id = 1
-        mock_quest.entity_id = 123
-        mock_quest.name = "Test Quest"
-        mock_quest.type = None
-        mock_quest.is_private = False
-        mock_quest.is_completed = True
-        mock_quest.created_at = datetime.now()
-        mock_quest.updated_at = datetime.now()
-        mock_quest.tags = []
-        mock_quest.entry = None
-        mock_quest.posts = None  # No posts by default
-
-        self.mock_client.quests.create.return_value = mock_quest
+        # Mock direct API response
+        self.mock_client._request = MagicMock(
+            return_value={
+                "data": {
+                    "id": 1,
+                    "entity_id": 123,
+                    "name": "Test Quest",
+                    "type": None,
+                    "is_completed": True,
+                }
+            }
+        )
 
         # Create quest with is_completed=True
         result = self.service.create_entity(
             entity_type="quest", name="Test Quest", is_completed=True
         )
 
-        # Verify the API was called with is_completed
-        self.mock_client.quests.create.assert_called_once()
-        call_args = self.mock_client.quests.create.call_args[1]
-        assert call_args["is_completed"] is True
-
-        # Verify the result includes is_completed
-        assert result["is_completed"] is True
+        # Verify the direct API was called with is_completed
+        self.mock_client._request.assert_called_once()
+        payload = self.mock_client._request.call_args[1]["json"]
+        assert payload["is_completed"] is True
 
     def test_update_quest_is_completed(self):
         """Test updating a quest's is_completed status."""
@@ -68,18 +62,18 @@ class TestQuestFields:
             }
         )
 
-        # Mock the update response
-        self.mock_client.quests.update.return_value = None
+        # Mock direct API response
+        self.mock_client._request = MagicMock(return_value={"data": {}})
 
         # Update quest with is_completed=True
         result = self.service.update_entity(
             entity_id=123, name="Test Quest", is_completed=True
         )
 
-        # Verify the API was called with is_completed
-        self.mock_client.quests.update.assert_called_once()
-        call_args = self.mock_client.quests.update.call_args[1]
-        assert call_args["is_completed"] is True
+        # Verify the direct API was called with is_completed
+        self.mock_client._request.assert_called_once()
+        payload = self.mock_client._request.call_args[1]["json"]
+        assert payload["is_completed"] is True
 
         assert result is True
 
@@ -123,22 +117,17 @@ class TestImageFields:
 
     def test_create_entity_with_image_fields(self):
         """Test creating an entity with image_uuid and header_uuid."""
-        # Mock the create response
-        mock_character = Mock()
-        mock_character.id = 1
-        mock_character.entity_id = 123
-        mock_character.name = "Test Character"
-        mock_character.type = None
-        mock_character.is_private = False
-        mock_character.created_at = datetime.now()
-        mock_character.updated_at = datetime.now()
-        mock_character.tags = []
-        mock_character.entry = None
-        mock_character.posts = None  # No posts by default
-        mock_character.image_uuid = "image-123"
-        mock_character.header_uuid = "header-456"
-
-        self.mock_client.characters.create.return_value = mock_character
+        # Mock direct API response
+        self.mock_client._request = MagicMock(
+            return_value={
+                "data": {
+                    "id": 1,
+                    "entity_id": 123,
+                    "name": "Test Character",
+                    "type": None,
+                }
+            }
+        )
 
         # Create character with image fields
         self.service.create_entity(
@@ -148,11 +137,11 @@ class TestImageFields:
             header_uuid="header-456",
         )
 
-        # Verify the API was called with image fields
-        self.mock_client.characters.create.assert_called_once()
-        call_args = self.mock_client.characters.create.call_args[1]
-        assert call_args["image_uuid"] == "image-123"
-        assert call_args["header_uuid"] == "header-456"
+        # Verify the direct API was called with image fields (API uses entity_*)
+        self.mock_client._request.assert_called_once()
+        payload = self.mock_client._request.call_args[1]["json"]
+        assert payload["entity_image_uuid"] == "image-123"
+        assert payload["entity_header_uuid"] == "header-456"
 
     def test_update_entity_image_fields(self):
         """Test updating an entity's image fields."""
@@ -166,8 +155,8 @@ class TestImageFields:
             }
         )
 
-        # Mock the update response
-        self.mock_client.characters.update.return_value = None
+        # Mock direct API response
+        self.mock_client._request = MagicMock(return_value={"data": {}})
 
         # Update character with image fields
         result = self.service.update_entity(
@@ -177,11 +166,11 @@ class TestImageFields:
             header_uuid="new-header-101",
         )
 
-        # Verify the API was called with image fields
-        self.mock_client.characters.update.assert_called_once()
-        call_args = self.mock_client.characters.update.call_args[1]
-        assert call_args["image_uuid"] == "new-image-789"
-        assert call_args["header_uuid"] == "new-header-101"
+        # Verify the direct API was called with image fields (API uses entity_*)
+        self.mock_client._request.assert_called_once()
+        payload = self.mock_client._request.call_args[1]["json"]
+        assert payload["entity_image_uuid"] == "new-image-789"
+        assert payload["entity_header_uuid"] == "new-header-101"
 
         assert result is True
 

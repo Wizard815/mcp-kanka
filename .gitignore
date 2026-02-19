@@ -75,6 +75,7 @@ cython_debug/
 # IDEs
 .idea/
 .vscode/
+.cursor/
 *.swp
 *.swo
 *~
@@ -85,3 +86,10 @@ Thumbs.db
 
 # Project specific
 claude-notes/
+
+# Ruff
+.ruff_cache/
+
+# Logs and local output
+*.log
+*.tmp
