@@ -202,7 +202,7 @@ Body: `name` (required), `entry`, `type`, `note_id` (parent), `tags`, `is_privat
 | PUT/PATCH | `events/{id}` |
 | DELETE | `events/{id}` |
 
-Body: `name` (required), `entry`, `type`, `date`, `location_id`, `tags`, `is_private`. Events link to calendars via `calendar_id`, `calendar_year`, `calendar_month`, `calendar_day`.
+Body: `name` (required), `entry`, `type`, `date`, `location_id`, `tags`, `is_private`, `event_id` (parent for nesting). Events link to calendars via `calendar_id`, `calendar_year`, `calendar_month`, `calendar_day`.
 
 ### Calendars
 

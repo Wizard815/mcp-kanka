@@ -86,6 +86,9 @@ Thumbs.db
 
 # Project specific
 claude-notes/
+kanka_events.json
+scripts/
+agent-tools/
 
 # Ruff
 .ruff_cache/

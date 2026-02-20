@@ -1,6 +1,6 @@
-# Session Log – 2026-02-18 / 2026-02-19 / 2026-02-19 (Session 2)
+# Session Log – 2026-02-18 / 2026-02-19 / 2026-02-19 / 2026-02-20 (Sessions 2–3)
 
-Overview of changes and additions to the MCP Kanka server across two implementation phases and a follow-up session.
+Overview of changes and additions to the MCP Kanka server across two implementation phases and follow-up sessions.
 
 **Reference:** Full Cursor session transcript: `cursor_kanka_mcp_integration_from_mcpad.md` (exported 2/18/2026). That document captures the MCPaddition plan (from 00_Inbox/MCPDUMP) and its implementation.
 
@@ -13,6 +13,8 @@ Overview of changes and additions to the MCP Kanka server across two implementat
 **Phase 2 – Module expansion:** Added **map**, **calendar**, **event**, **timeline** entity types; map sub-resources (**manage_map_markers**, **manage_map_groups**, **manage_map_layers**); **manage_calendar_reminders**; timeline sub-resources (**manage_timeline_eras**, **manage_timeline_elements**). Fixed Kanka API mismatches: calendar create (flat arrays) vs update (object arrays); map timestamps (API returns strings, not datetimes). Hardened `.gitignore` for `.cursor/`, caches, and logs.
 
 **Phase 3 – 2026-02-19 (Session 2):** Added **birth/death/founded** support to `manage_calendar_reminders` via `event_type` (birth, death, founded) for Kanka’s age/foundation calculation ([docs](https://docs.kanka.io/en/latest/advanced/age.html)). Fixed calendar update: Kanka API accepts **flat arrays** for both create and update (`month_name`, `month_length`, `weekday`); `_prepare_calendar_structural_fields` now uses flat arrays for updates. Relaxed `pyproject.toml` `requires-python` to `>=3.10`. Fixed `manage_organisation_members` to use character type ID. **Known issue:** `moon_name` / `moon_fullmoon` triggers Kanka API 500 (“Undefined array key 0”)—add moons via the Kanka UI.
+
+**Phase 4 – 2026-02-20 (Session 4):** Added **event nesting** support. Events can now have parent events via `parent_id` (maps to Kanka API `event_id`). Updated `PARENT_ID_FIELD_MAP`: `event` → `event_id`. Event API responses include `parent_id` from `event_id`. Added `clear_parent` support in update for un-nesting. Updated `docs/KANKA_API_REFERENCE.md` with `event_id` for Events body. Hardened `.gitignore`: `kanka_events.json`, `scripts/`, `agent-tools/` (converted Legendkeeper data, migration scripts, MCP tool output).
 
 ---
 

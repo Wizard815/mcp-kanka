@@ -74,7 +74,7 @@ class KankaService:
         "calendar": None,
         "character": None,
         "creature": "creature_id",
-        "event": None,
+        "event": "event_id",
         "family": "family_id",
         "item": "item_id",
         "location": "location_id",  # Kanka API uses location_id for parent
@@ -694,8 +694,10 @@ class KankaService:
                 data["tags"] = tag_ids
 
             # Parent nesting
-            if parent_id is not None:
-                parent_field = self.PARENT_ID_FIELD_MAP.get(entity_type)
+            parent_field = self.PARENT_ID_FIELD_MAP.get(entity_type)
+            if parent_field and extra_fields.get("clear_parent"):
+                data[parent_field] = None
+            elif parent_id is not None:
                 if parent_field:
                     data[parent_field] = parent_id
 
@@ -1742,6 +1744,7 @@ class KankaService:
             "name": data.get("name"),
             "entity_type": "event",
             "type": data.get("type"),
+            "parent_id": data.get("event_id"),
             "tags": self._resolve_tag_names(data.get("tags", [])),
             "created_at": data.get("created_at"),
             "updated_at": data.get("updated_at"),
@@ -1988,6 +1991,31 @@ class KankaService:
     def delete_relation(self, entity_id: int, relation_id: int) -> bool:
         """Delete a relation."""
         self.client._request("DELETE", f"entities/{entity_id}/relations/{relation_id}")
+        return True
+
+    # ---- Sub-resource: Entity Tags ----
+
+    def list_entity_tags(self, entity_id: int) -> list[int]:
+        """List tag IDs assigned to an entity."""
+        resp = self.client._request("GET", f"entities/{entity_id}/entity_tags")
+        items = resp.get("data", []) if isinstance(resp, dict) else resp
+        ids = []
+        for item in items:
+            data = vars(item) if hasattr(item, "__dict__") else item
+            tid = (
+                data.get("tag_id")
+                if isinstance(data, dict)
+                else getattr(item, "tag_id", None)
+            )
+            if tid is not None:
+                ids.append(int(tid))
+        return ids
+
+    def add_entity_tag(self, entity_id: int, tag_id: int) -> bool:
+        """Add a tag to an entity. Idempotent if tag already present."""
+        self.client._request(
+            "POST", f"entities/{entity_id}/entity_tags", json={"tag_id": tag_id}
+        )
         return True
 
     def _relation_to_dict(self, data: dict[str, Any] | Any) -> dict[str, Any]:

@@ -439,6 +439,9 @@ class KankaOperations:
                 continue
 
             try:
+                extra = self._extract_extra_fields(update)
+                if update.get("clear_parent"):
+                    extra["clear_parent"] = True
                 success = self.service.update_entity(
                     entity_id=entity_id,
                     name=name,
@@ -450,7 +453,7 @@ class KankaOperations:
                     image_uuid=update.get("image_uuid"),
                     header_uuid=update.get("header_uuid"),
                     parent_id=update.get("parent_id"),
-                    **self._extract_extra_fields(update),
+                    **extra,
                 )
                 results.append(
                     {"entity_id": entity_id, "success": success, "error": None}
