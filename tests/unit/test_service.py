@@ -524,7 +524,7 @@ class TestKankaService:
         assert len(entities) == 150
 
     def test_calendar_create_uses_flat_arrays(self):
-        """Calendar create sends month_name, month_length, moon_name, moon_fullmoon as flat arrays."""
+        """Calendar create sends month_name, month_length, weekday as flat arrays (moons via UI)."""
         self.mock_client._request.return_value = {
             "data": {"id": 1, "entity_id": 99, "name": "Test", "type": None}
         }
@@ -534,8 +534,6 @@ class TestKankaService:
             weekday=["Mon", "Tue"],
             month_name=["Jan", "Feb"],
             month_length=[31, 28],
-            moon_name=["Luna"],
-            moon_fullmoon=["30"],
         )
         call_args = self.mock_client._request.call_args
         assert call_args[0][0] == "POST"
@@ -545,13 +543,11 @@ class TestKankaService:
         assert payload["weekday"] == ["Mon", "Tue"]
         assert payload["month_name"] == ["Jan", "Feb"]
         assert payload["month_length"] == [31, 28]
-        assert payload["moon_name"] == ["Luna"]
-        assert payload["moon_fullmoon"] == ["30"]
-        assert "months" not in payload
+        assert "moon_name" not in payload
         assert "moons" not in payload
 
     def test_calendar_update_uses_flat_arrays(self):
-        """Calendar update sends month_name, month_length, moon_name, moon_fullmoon (same as create)."""
+        """Calendar update sends month_name, month_length as flat arrays."""
         self.mock_client.entity.return_value = {
             "type": "Calendar",
             "child": {"id": 1, "entity_id": 99},
@@ -562,8 +558,6 @@ class TestKankaService:
             "Test Calendar",
             month_name=["Jan", "Feb"],
             month_length=[31, 28],
-            moon_name=["Luna"],
-            moon_fullmoon=["30"],
         )
         calls = self.mock_client._request.call_args_list
         patch_call = next(c for c in calls if c[0][0] in ("PUT", "PATCH"))
@@ -571,6 +565,4 @@ class TestKankaService:
         assert "month_name" in payload
         assert payload["month_name"] == ["Jan", "Feb"]
         assert payload["month_length"] == [31, 28]
-        assert "moon_name" in payload
-        assert payload["moon_name"] == ["Luna"]
-        assert payload["moon_fullmoon"] == ["30"]
+        assert "moon_name" not in payload

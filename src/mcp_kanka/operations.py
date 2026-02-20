@@ -78,16 +78,13 @@ _EXTRA_FIELD_KEYS = [
     "calendar_year",
     "calendar_month",
     "calendar_day",
-    # Calendar-specific (moons, months, weekdays, etc.)
+    # Calendar structural (months, weekdays; moons skipped - add via Kanka UI)
     "weekday",
     "weekdays",
     "months",
-    "moons",
     "month_name",
     "month_length",
     "month_type",
-    "moon_name",
-    "moon_fullmoon",
     "season_name",
     "season_month",
     "season_day",
@@ -341,6 +338,19 @@ class KankaOperations:
                 )
                 continue
 
+            # Extract reminder (birth/death/founded) for age calc - not passed to create_entity
+            reminder = entity_input.get("reminder")
+            if reminder and entity_type not in (
+                "character",
+                "location",
+                "organization",
+                "family",
+            ):
+                reminder = None  # Only these entity types support age reminders
+            extra = self._extract_extra_fields(entity_input)
+            if reminder:
+                extra = {k: v for k, v in extra.items() if k != "reminder"}
+
             try:
                 created = self.service.create_entity(
                     entity_type=entity_type,
@@ -353,18 +363,39 @@ class KankaOperations:
                     image_uuid=entity_input.get("image_uuid"),
                     header_uuid=entity_input.get("header_uuid"),
                     parent_id=entity_input.get("parent_id"),
-                    **self._extract_extra_fields(entity_input),
+                    **extra,
                 )
-                results.append(
-                    {
-                        "id": created["id"],
-                        "entity_id": created["entity_id"],
-                        "name": created["name"],
-                        "mention": created.get("mention"),
-                        "success": True,
-                        "error": None,
-                    }
-                )
+                result_entry = {
+                    "id": created["id"],
+                    "entity_id": created["entity_id"],
+                    "name": created["name"],
+                    "mention": created.get("mention"),
+                    "success": True,
+                    "error": None,
+                }
+
+                # Add reminder (birth/death/founded) for age calculation
+                if reminder and created.get("entity_id"):
+                    event_type = reminder.get("type", "birth")
+                    try:
+                        self.service.create_calendar_reminder(
+                            entity_id=created["entity_id"],
+                            calendar_id=reminder["calendar_id"],
+                            year=reminder["year"],
+                            month=reminder["month"],
+                            day=reminder["day"],
+                            length=1,
+                            event_type=event_type,
+                        )
+                        result_entry["reminder_added"] = True
+                    except Exception as r_err:
+                        logger.warning(
+                            f"Failed to add reminder for {created['entity_id']}: {r_err}"
+                        )
+                        result_entry["reminder_added"] = False
+                        result_entry["reminder_error"] = str(r_err)
+
+                results.append(result_entry)
 
             except Exception as e:
                 logger.error(f"Failed to create entity '{entity_name}': {e}")

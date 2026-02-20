@@ -1,8 +1,21 @@
 """Resources provided by the Kanka MCP server."""
 
 import json
+from pathlib import Path
 
 from .types import KankaContext
+
+# Path to API reference doc (project root / docs)
+_API_REF_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "docs" / "KANKA_API_REFERENCE.md"
+)
+
+
+def get_kanka_api_reference() -> str:
+    """Get the Kanka API reference content for agent context."""
+    if _API_REF_PATH.exists():
+        return _API_REF_PATH.read_text(encoding="utf-8")
+    return "API reference not found. See https://app.kanka.io/api-docs/1.0/"
 
 
 def get_kanka_context() -> str:
@@ -10,7 +23,7 @@ def get_kanka_context() -> str:
     context: KankaContext = {
         "description": "Kanka is a worldbuilding and campaign management tool. This MCP server provides access to manage entity types, their descriptions, relations, attributes, and organisation membership.",
         "supported_entities": {
-            "calendar": "In-world calendars with months, weekdays, moons",
+            "calendar": "In-world calendars with months, weekdays (moons via Kanka UI)",
             "character": "People in your world (PCs, NPCs, etc)",
             "creature": "Monster types and animals (templates, not individuals)",
             "event": "Historical events linked to calendars",
@@ -47,3 +60,6 @@ def get_kanka_context() -> str:
     }
 
     return json.dumps(context, indent=2)
+
+
+__all__ = ["get_kanka_context", "get_kanka_api_reference"]

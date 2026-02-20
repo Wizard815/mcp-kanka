@@ -105,7 +105,11 @@ The MCP server follows this structure:
 5. **Content Converter** (`converter.py`): Markdown ↔ HTML conversion with mention preservation
 6. **Types Module** (`types.py`): Type definitions for tool parameters and responses
 7. **Utils Module** (`utils.py`): Shared utilities like fuzzy matching, filtering, pagination
-8. **Resources Module** (`resources.py`): Provides the kanka://context resource
+8. **Resources Module** (`resources.py`): Provides the kanka://context and kanka://api-reference resources
+
+### Agent API Context
+
+When working with Kanka API calls, agents should reference `docs/KANKA_API_REFERENCE.md` or the `kanka://api-reference` MCP resource. This file contains endpoint paths, body parameters, and critical format notes (e.g. Calendar create/update use `moon_name`/`moon_fullmoon` flat arrays, not `moons` objects).
 
 ## Implementation Guidelines
 
@@ -215,6 +219,15 @@ async def handle_find_entities(**params):
 - `manage_relations()` - Create/update/delete/list relations between entities
 - `manage_attributes()` - Create/update/delete/list/bulk-patch custom attributes
 - `manage_organisation_members()` - Add/update/remove/list org members
+- `manage_calendar_reminders()` - Add/update/remove/list calendar events (birth/death/founded for age calc)
+
+## Calendar Reminders & Character Age
+
+Calendar reminders with `event_type` drive age calculation in Kanka. See [Birth, Death, Foundation](https://docs.kanka.io/en/latest/advanced/age.html):
+- **Characters**: `birth` (type_id 2), `death` (type_id 3) – age shown in profile sidebar
+- **Locations/Organisations/Families**: `founded` (type_id 1)
+
+When creating characters (or locations/orgs/families), pass `reminder: {calendar_id, year, month, day, type}` with `type` = `birth` or `death` (characters) or `founded` (locations/orgs/families) to auto-add a reminder for age calculation. `manage_calendar_reminders` supports `event_type` for manual reminders.
 
 ## Key Implementation Details
 
@@ -244,7 +257,7 @@ Entities can be nested under a parent of the same type via `parent_id`. The serv
 
 ### Entity-Specific Fields
 Create/update tools support optional type-specific fields:
-- **Characters**: `location_id`, `title`, `age`, `sex`, `pronouns`, `is_dead`, `races`, `families`
+- **Characters**: `location_id`, `title`, `age`, `sex`, `pronouns`, `is_dead`, `races`, `families`, `reminder` (birth/death for age calc)
 - **Organisations**: `location_id`, `is_defunct`
 - **Journals**: `date`, `character_id`
 - **Families**: `location_id`, `is_extinct`

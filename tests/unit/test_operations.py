@@ -219,6 +219,53 @@ class TestCreateEntities:
         assert result[1]["success"] is False
         assert "API Error" in result[1]["error"]
 
+    @patch("mcp_kanka.operations.KankaService")
+    async def test_create_character_with_reminder_adds_reminder(
+        self, mock_service_class
+    ):
+        """Test creating character with reminder (type birth) adds reminder for age calc."""
+        mock_service = Mock()
+        mock_service_class.return_value = mock_service
+        mock_service.create_entity.return_value = {
+            "id": 1,
+            "entity_id": 101,
+            "name": "Elder NPC",
+            "mention": "[entity:101]",
+        }
+        mock_service.create_calendar_reminder.return_value = {"id": 1, "year": 600}
+
+        ops = KankaOperations(service=mock_service)
+
+        result = await ops.create_entities(
+            entities=[
+                {
+                    "entity_type": "character",
+                    "name": "Elder NPC",
+                    "type": "NPC",
+                    "reminder": {
+                        "calendar_id": 8893860,
+                        "year": 600,
+                        "month": 1,
+                        "day": 15,
+                        "type": "birth",
+                    },
+                }
+            ]
+        )
+
+        assert len(result) == 1
+        assert result[0]["success"] is True
+        assert result[0]["reminder_added"] is True
+        mock_service.create_calendar_reminder.assert_called_once_with(
+            entity_id=101,
+            calendar_id=8893860,
+            year=600,
+            month=1,
+            day=15,
+            length=1,
+            event_type="birth",
+        )
+
 
 class TestUpdateEntities:
     """Test update_entities operation."""

@@ -112,8 +112,8 @@ class KankaService:
 
     def __init__(self) -> None:
         """Initialize the service with Kanka client."""
-        token = os.getenv("KANKA_TOKEN")
-        campaign_id = os.getenv("KANKA_CAMPAIGN_ID")
+        token = (os.getenv("KANKA_TOKEN") or "").strip()
+        campaign_id = (os.getenv("KANKA_CAMPAIGN_ID") or "").strip()
 
         if not token or not campaign_id:
             raise ValueError(
@@ -623,9 +623,6 @@ class KankaService:
                 "month_name",
                 "month_length",
                 "month_type",
-                "moon_name",
-                "moon_fullmoon",
-                "moons",
             }
             if entity_type == "calendar":
                 structural = self._prepare_calendar_structural_fields(
@@ -717,13 +714,20 @@ class KankaService:
                 "month_name",
                 "month_length",
                 "month_type",
-                "moon_name",
-                "moon_fullmoon",
-                "moons",
             }
             if entity_type == "calendar":
+                # Merge existing months/weekdays if not in extra - API may require full structure
+                merged = dict(extra_fields)
+                if "months" not in merged and entity_data.get("months"):
+                    merged["months"] = entity_data["months"]
+                if (
+                    "weekdays" not in merged
+                    and "weekday" not in merged
+                    and entity_data.get("weekdays")
+                ):
+                    merged["weekdays"] = entity_data["weekdays"]
                 structural = self._prepare_calendar_structural_fields(
-                    dict(extra_fields), for_create=False
+                    merged, for_create=False
                 )
                 data.update(structural)
                 extra_fields = {
@@ -1150,138 +1154,41 @@ class KankaService:
 
     @staticmethod
     def _prepare_calendar_structural_fields(
-        extra: dict[str, Any], for_create: bool
+        extra: dict[str, Any], _for_create: bool
     ) -> dict[str, Any]:
-        """Convert calendar months/weekdays/moons to API-expected format.
+        """Convert calendar months/weekdays to API-expected format.
 
-        Kanka API accepts flat arrays for both create and update:
-        - month_name, month_length, month_type, weekday
-        - moon_name, moon_fullmoon
+        Moons: add manually in Kanka UI (API 500 when sent programmatically).
         """
         result: dict[str, Any] = {}
 
-        if for_create:
-            # ---- CREATE: use flat arrays ----
-            weekday = extra.get("weekdays") or extra.get("weekday")
-            if isinstance(weekday, list | tuple) and len(weekday) >= 2:
-                result["weekday"] = list(weekday)
+        weekday = extra.get("weekdays") or extra.get("weekday")
+        if isinstance(weekday, list | tuple) and len(weekday) >= 2:
+            result["weekday"] = list(weekday)
 
-            months = extra.get("months")
-            if isinstance(months, list | tuple) and months:
-                # Convert objects -> flat arrays
-                mn, ml, mt = [], [], []
-                for m in months:
-                    if isinstance(m, dict):
-                        mn.append(m.get("name", ""))
-                        ml.append(m.get("length", 30))
-                        mt.append(m.get("type", "standard"))
-                if mn:
-                    result["month_name"] = mn
-                    result["month_length"] = ml
-                    result["month_type"] = mt
-            elif extra.get("month_name") and extra.get("month_length"):
-                result["month_name"] = list(extra["month_name"])
-                result["month_length"] = [int(x) for x in extra["month_length"]]
-                result["month_type"] = list(
-                    extra.get("month_type") or ["standard"] * len(extra["month_name"])
+        months = extra.get("months")
+        if isinstance(months, list | tuple) and months:
+            mn, ml, mt = [], [], []
+            for m in months:
+                if isinstance(m, dict):
+                    mn.append(m.get("name", ""))
+                    ml.append(m.get("length", 30))
+                    mt.append(m.get("type", "standard"))
+            if mn:
+                result["month_name"] = mn
+                result["month_length"] = ml
+                result["month_type"] = mt
+        elif extra.get("month_name") and extra.get("month_length"):
+            result["month_name"] = list(extra["month_name"])
+            result["month_length"] = [int(x) for x in extra["month_length"]]
+            result["month_type"] = list(
+                extra.get("month_type") or ["standard"] * len(extra["month_name"])
+            )
+            if len(result["month_type"]) < len(result["month_name"]):
+                result["month_type"].extend(
+                    ["standard"]
+                    * (len(result["month_name"]) - len(result["month_type"]))
                 )
-                if len(result["month_type"]) < len(result["month_name"]):
-                    result["month_type"].extend(
-                        ["standard"]
-                        * (len(result["month_name"]) - len(result["month_type"]))
-                    )
-
-            moons = extra.get("moons")
-            if isinstance(moons, list | tuple) and moons:
-                # Convert objects -> flat arrays; fullmoon must be string
-                mn, mf = [], []
-                for m in moons:
-                    if isinstance(m, dict):
-                        mn.append(m.get("name", ""))
-                        fm = m.get("fullmoon")
-                        mf.append(str(fm) if fm is not None else "30")
-                if mn:
-                    result["moon_name"] = mn
-                    result["moon_fullmoon"] = mf
-            elif extra.get("moon_name"):
-                moon_names = extra["moon_name"]
-                mf_vals = extra.get("moon_fullmoon")
-                mn_list: list[str] = (
-                    [str(moon_names)]
-                    if isinstance(moon_names, str)
-                    else [str(x) for x in (moon_names or [])]
-                )
-                if mf_vals is None:
-                    mf_list: list[str] = ["30"]
-                elif not isinstance(mf_vals, list | tuple):
-                    mf_list = [str(mf_vals)]
-                else:
-                    mf_list = [str(x) for x in mf_vals]
-                if len(mf_list) < len(mn_list):
-                    mf_list.extend(["30"] * (len(mn_list) - len(mf_list)))
-                result["moon_name"] = [str(x) for x in mn_list]
-                result["moon_fullmoon"] = mf_list[: len(mn_list)]
-
-        else:
-            # ---- UPDATE: use same flat arrays as create (API accepts both) ----
-            weekday = extra.get("weekdays") or extra.get("weekday")
-            if isinstance(weekday, list | tuple) and len(weekday) >= 2:
-                result["weekday"] = list(weekday)
-
-            months = extra.get("months")
-            if isinstance(months, list | tuple) and months:
-                # Convert objects -> flat arrays
-                mn, ml, mt = [], [], []
-                for m in months:
-                    if isinstance(m, dict):
-                        mn.append(m.get("name", ""))
-                        ml.append(m.get("length", 30))
-                        mt.append(m.get("type", "standard"))
-                if mn:
-                    result["month_name"] = mn
-                    result["month_length"] = ml
-                    result["month_type"] = mt
-            elif extra.get("month_name") and extra.get("month_length"):
-                result["month_name"] = list(extra["month_name"])
-                result["month_length"] = [int(x) for x in extra["month_length"]]
-                result["month_type"] = list(
-                    extra.get("month_type") or ["standard"] * len(extra["month_name"])
-                )
-                if len(result["month_type"]) < len(result["month_name"]):
-                    result["month_type"].extend(
-                        ["standard"]
-                        * (len(result["month_name"]) - len(result["month_type"]))
-                    )
-
-            moons = extra.get("moons")
-            if isinstance(moons, list | tuple) and moons:
-                mn, mf = [], []
-                for m in moons:
-                    if isinstance(m, dict):
-                        mn.append(m.get("name", ""))
-                        fm = m.get("fullmoon")
-                        mf.append(str(fm) if fm is not None else "30")
-                if mn:
-                    result["moon_name"] = mn
-                    result["moon_fullmoon"] = mf
-            elif extra.get("moon_name"):
-                moon_names = extra["moon_name"]
-                mf_vals = extra.get("moon_fullmoon")
-                mn_list: list[str] = (
-                    [str(moon_names)]
-                    if isinstance(moon_names, str)
-                    else [str(x) for x in (moon_names or [])]
-                )
-                if mf_vals is None:
-                    mf_list: list[str] = ["30"]
-                elif not isinstance(mf_vals, list | tuple):
-                    mf_list = [str(mf_vals)]
-                else:
-                    mf_list = [str(x) for x in mf_vals]
-                if len(mf_list) < len(mn_list):
-                    mf_list.extend(["30"] * (len(mn_list) - len(mf_list)))
-                result["moon_name"] = [str(x) for x in mn_list]
-                result["moon_fullmoon"] = mf_list[: len(mn_list)]
 
         return result
 
@@ -1329,8 +1236,6 @@ class KankaService:
                 "month_name",
                 "month_length",
                 "month_type",
-                "moon_name",
-                "moon_fullmoon",
                 "season_name",
                 "season_month",
                 "season_day",
@@ -1700,12 +1605,13 @@ class KankaService:
             "day": day,
             "length": length,
         }
-        if event_type is not None:
-            tid = self._resolve_event_type_id(event_type)
-            if tid is not None:
-                data["type_id"] = tid
-        if name:
-            data["name"] = name
+        tid = self._resolve_event_type_id(event_type) if event_type else None
+        if tid is not None:
+            data["type_id"] = tid
+        # API requires name - default by type_id: 1=Founded, 2=Birth, 3=Death
+        data["name"] = name or {1: "Founded", 2: "Birth", 3: "Death"}.get(
+            tid or 0, "Reminder"
+        )
         if comment:
             data["comment"] = comment
         if colour:
@@ -1719,7 +1625,7 @@ class KankaService:
         if is_hidden is not None:
             data["visibility_id"] = 2 if is_hidden else 1
         resp = self.client._request(
-            "POST", f"entities/{entity_id}/entity_events", json=data
+            "POST", f"entities/{entity_id}/reminders", json=data
         )
         raw = resp.get("data", resp) if isinstance(resp, dict) else resp
         return self._calendar_reminder_to_dict(raw)
@@ -1741,7 +1647,7 @@ class KankaService:
                     data[k] = v
         resp = self.client._request(
             "PATCH",
-            f"entities/{entity_id}/entity_events/{reminder_id}",
+            f"entities/{entity_id}/reminders/{reminder_id}",
             json=data,
         )
         raw = resp.get("data", resp) if isinstance(resp, dict) else resp
@@ -1749,9 +1655,7 @@ class KankaService:
 
     def delete_calendar_reminder(self, entity_id: int, reminder_id: int) -> bool:
         """Remove a reminder from a calendar."""
-        self.client._request(
-            "DELETE", f"entities/{entity_id}/entity_events/{reminder_id}"
-        )
+        self.client._request("DELETE", f"entities/{entity_id}/reminders/{reminder_id}")
         return True
 
     def _calendar_reminder_to_dict(self, data: dict[str, Any] | Any) -> dict[str, Any]:

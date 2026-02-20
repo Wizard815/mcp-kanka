@@ -41,7 +41,7 @@ class TestQuestFields:
         )
 
         # Create quest with is_completed=True
-        result = self.service.create_entity(
+        _ = self.service.create_entity(
             entity_type="quest", name="Test Quest", is_completed=True
         )
 

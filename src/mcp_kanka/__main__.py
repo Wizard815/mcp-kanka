@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from mcp.server import Server
 from pydantic import AnyUrl
 
-from .resources import get_kanka_context
+from .resources import get_kanka_api_reference, get_kanka_context
 from .tools import (
     handle_check_entity_updates,
     handle_create_entities,
@@ -26,14 +26,14 @@ from .tools import (
     handle_find_entities,
     handle_get_entities,
     handle_manage_attributes,
+    handle_manage_calendar_reminders,
     handle_manage_map_groups,
     handle_manage_map_layers,
     handle_manage_map_markers,
-    handle_manage_calendar_reminders,
-    handle_manage_timeline_eras,
-    handle_manage_timeline_elements,
     handle_manage_organisation_members,
     handle_manage_relations,
+    handle_manage_timeline_elements,
+    handle_manage_timeline_eras,
     handle_update_entities,
     handle_update_posts,
 )
@@ -80,7 +80,13 @@ async def list_resources() -> list[types.Resource]:
             name="Kanka Context",
             description="Information about Kanka's structure and this MCP server's capabilities",
             mimeType="application/json",
-        )
+        ),
+        types.Resource(
+            uri=AnyUrl("kanka://api-reference"),
+            name="Kanka API Reference",
+            description="Kanka REST API endpoints, parameters, and formats (from app.kanka.io/api-docs/1.0)",
+            mimeType="text/markdown",
+        ),
     ]
 
 
@@ -89,6 +95,8 @@ async def read_resource(uri: str) -> str:
     """Read a resource by URI."""
     if uri == "kanka://context":
         return get_kanka_context()
+    if uri == "kanka://api-reference":
+        return get_kanka_api_reference()
     raise ValueError(f"Unknown resource: {uri}")
 
 
@@ -283,6 +291,31 @@ async def list_tools() -> list[types.Tool]:
                                     "type": "string",
                                     "description": "Gallery header image UUID",
                                 },
+                                "reminder": {
+                                    "type": "object",
+                                    "description": "Create a reminder on entity with type birth/death (characters) or founded (locations/orgs/families) for age calc. See https://docs.kanka.io/en/latest/advanced/age.html",
+                                    "properties": {
+                                        "calendar_id": {
+                                            "type": "integer",
+                                            "description": "Calendar entity_id",
+                                        },
+                                        "year": {"type": "integer"},
+                                        "month": {"type": "integer"},
+                                        "day": {"type": "integer"},
+                                        "type": {
+                                            "type": "string",
+                                            "enum": ["birth", "death", "founded"],
+                                            "description": "birth/death for characters; founded for locations, organisations, families",
+                                        },
+                                    },
+                                    "required": [
+                                        "calendar_id",
+                                        "year",
+                                        "month",
+                                        "day",
+                                        "type",
+                                    ],
+                                },
                             },
                             "required": ["entity_type", "name"],
                         },
@@ -402,6 +435,39 @@ async def list_tools() -> list[types.Tool]:
                                 "header_uuid": {
                                     "type": "string",
                                     "description": "Gallery header image UUID",
+                                },
+                                "weekdays": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Calendar: weekday names (min 2)",
+                                },
+                                "months": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "name": {"type": "string"},
+                                            "length": {"type": "integer"},
+                                            "type": {"type": "string"},
+                                        },
+                                    },
+                                    "description": "Calendar: months as [{name, length, type}]",
+                                },
+                                "current_year": {
+                                    "type": "integer",
+                                    "description": "Calendar: current year",
+                                },
+                                "current_month": {
+                                    "type": "integer",
+                                    "description": "Calendar: current month",
+                                },
+                                "current_day": {
+                                    "type": "integer",
+                                    "description": "Calendar: current day",
+                                },
+                                "suffix": {
+                                    "type": "string",
+                                    "description": "Calendar: year suffix (e.g. A.E., BC)",
                                 },
                             },
                             "required": ["entity_id", "name"],
@@ -893,7 +959,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="manage_calendar_reminders",
-            description="Add, update, remove, or list events/entities on a calendar (holidays, recurring events)",
+            description="Add, update, remove, or list events on a calendar. Use event_type 'birth'/'death' for characters (age calc), 'founded' for locations/orgs/families. See https://docs.kanka.io/en/latest/advanced/age.html",
             inputSchema={
                 "type": "object",
                 "properties": {
