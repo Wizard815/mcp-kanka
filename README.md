@@ -1,4 +1,16 @@
 # MCP-Kanka
+> **Fork note (ModuleAddon):** This fork extends upstream [`ervwalter/mcp-kanka`](https://github.com/ervwalter/mcp-kanka) with additional Kanka modules and workflow tooling for campaign operations.
+>
+> **What’s added in this fork**
+> - Expanded module/tool coverage beyond upstream core entity/post CRUD (for example: map marker workflows, map/timeline/calendar-related operations, and migration-oriented helpers).
+> - Safer map-marker update behavior for Kanka validation edge cases (including `entity_id: null` flows that require marker `name` handling).
+> - A whitelisted ordered migration runner (`run_migration_plan`) for repeatable bulk conversions (marker repoints, entity updates, tag removals, deletes).
+> - Campaign-specific operational docs/scripts used for worldbuilding conversion workflows.
+>
+> **Why this differs from upstream**
+> - Upstream stays focused on a smaller, general MCP surface.
+> - This fork optimizes for high-volume campaign migrations and region/location conversion workflows with stricter sequencing and guardrails.
+
 
 MCP (Model Context Protocol) server for Kanka API integration. This server provides AI assistants with tools to interact with Kanka campaigns, enabling CRUD operations on various entity types like characters, locations, organizations, and more.
 
