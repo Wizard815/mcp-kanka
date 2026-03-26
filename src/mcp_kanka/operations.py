@@ -4,10 +4,11 @@ This module provides a reusable operations layer that can be used by both
 MCP tools and external scripts, ensuring consistent behavior and type safety.
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, get_args
 
 from .service import KankaService, get_service
 from .types import (
@@ -16,7 +17,6 @@ from .types import (
     CreatePostResult,
     DeleteEntityResult,
     DeletePostResult,
-    EntityType,
     GetEntityResult,
     UpdateEntityResult,
     UpdatePostResult,
@@ -32,78 +32,8 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 
-VALID_ENTITY_TYPES: list[EntityType] = [
-    "calendar",
-    "character",
-    "creature",
-    "event",
-    "family",
-    "item",
-    "location",
-    "map",
-    "organization",
-    "race",
-    "note",
-    "journal",
-    "quest",
-    "tag",
-    "timeline",
-]
 
-# Fields that get forwarded as **extra_fields to service.create_entity / update_entity
-_EXTRA_FIELD_KEYS = [
-    "location_id",
-    "title",
-    "age",
-    "sex",
-    "pronouns",
-    "is_dead",
-    "races",
-    "families",
-    "is_defunct",
-    "date",
-    "character_id",
-    "is_extinct",
-    "creator_id",
-    "price",
-    "size",
-    "weight",
-    "colour",
-    "center_marker_id",
-    "center_x",
-    "center_y",
-    "is_real",
-    "date",
-    "calendar_id",
-    "calendar_year",
-    "calendar_month",
-    "calendar_day",
-    # Calendar structural (months, weekdays; moons skipped - add via Kanka UI)
-    "weekday",
-    "weekdays",
-    "months",
-    "month_name",
-    "month_length",
-    "month_type",
-    "season_name",
-    "season_month",
-    "season_day",
-    "year_name",
-    "year_number",
-    "current_year",
-    "current_month",
-    "current_day",
-    "format",
-    "has_leap_year",
-    "leap_year_amount",
-    "leap_year_month",
-    "leap_year_offset",
-    "leap_year_start",
-    "skip_year_zero",
-    "suffix",
-]
-
-
+# Result classes with to_dict() methods for MCP compatibility
 @dataclass
 class FindEntitiesResult:
     """Structured result for find_entities operation."""
@@ -148,18 +78,12 @@ class KankaOperations:
     """High-level operations for Kanka, used by both MCP tools and external scripts."""
 
     def __init__(self, service: KankaService | None = None):
+        """Initialize operations with optional service instance.
+
+        Args:
+            service: Optional KankaService instance. If not provided, creates a new one.
+        """
         self.service = service or KankaService()
-
-    # ---- Helper to extract extra entity-specific fields ----
-
-    @staticmethod
-    def _extract_extra_fields(data: dict[str, Any]) -> dict[str, Any]:
-        """Pull entity-specific optional fields out of a flat dict."""
-        return {
-            k: data[k] for k in _EXTRA_FIELD_KEYS if k in data and data[k] is not None
-        }
-
-    # ---- Entity operations ----
 
     async def find_entities(
         self,
@@ -170,25 +94,71 @@ class KankaOperations:
         name_fuzzy: bool = False,
         type: str | None = None,
         tags: list[str] | None = None,
+        tag_id: list[int] | None = None,
         date_range: dict[str, str] | None = None,
         include_full: bool = True,
         page: int = 1,
         limit: int = 25,
         last_synced: str | None = None,
     ) -> dict[str, Any]:
-        """Find entities with search and filtering capabilities."""
-        if entity_type and entity_type not in VALID_ENTITY_TYPES:
+        """Find entities with search and filtering capabilities.
+
+        Args:
+            query: Search term for full-text search across names and content
+            entity_type: Type of entity to search for
+            name: Filter by entity name
+            name_exact: Use exact name matching (case-insensitive)
+            name_fuzzy: Use fuzzy name matching (typo-tolerant)
+            type: Filter by custom type field
+            tags: Filter by tags (must have all specified tags)
+            tag_id: Filter by tag IDs (must have all specified tags)
+            date_range: Date range filter for journals
+            include_full: Whether to include full entity details
+            page: Page number for pagination
+            limit: Number of results per page (0 for all)
+            last_synced: ISO timestamp to get only entities modified after this time
+
+        Returns:
+            Dictionary with entities and sync_info
+        """
+        # Validate entity type if provided
+        from .types import EntityType
+
+        valid_types = list(get_args(EntityType))
+        if entity_type and entity_type not in valid_types:
             logger.error(
-                f"Invalid entity_type: {entity_type}. "
-                f"Must be one of: {', '.join(VALID_ENTITY_TYPES)}"
+                f"Invalid entity_type: {entity_type}. Must be one of: {', '.join(valid_types)}"
             )
             return {"entities": [], "sync_info": {}}
 
+        # Resolve tags for API-side filtering (Kanka expects tag IDs).
+        combined_tag_ids: list[int] | None = None
+        client_tag_names: list[str] | None = None
+        if tags:
+            combined_tag_ids = self.service._get_or_create_tag_ids(tags)
+        if tag_id:
+            combined_tag_ids = (combined_tag_ids or []) + tag_id
+
+        if combined_tag_ids:
+            # Ensure uniqueness while preserving order.
+            seen: set[int] = set()
+            combined_tag_ids = [
+                tid for tid in combined_tag_ids if not (tid in seen or seen.add(tid))
+            ]
+            client_tag_names = self.service._resolve_tag_names(combined_tag_ids)
+
         try:
+            # Step 1: Get entities
             if query:
+                # For content search, we need full entities
                 entities = []
+
                 if entity_type:
+                    # Search specific entity type
+                    # Cast to EntityType since we validated it above
                     from typing import cast
+
+                    from .types import EntityType
 
                     entity_objects = self.service.list_entities(
                         cast(EntityType, entity_type),
@@ -196,11 +166,15 @@ class KankaOperations:
                         limit=0,
                         last_sync=last_synced,
                         related=include_full,
+                        tag_ids=combined_tag_ids,
                     )
                     for obj in entity_objects:
-                        entities.append(self.service._entity_to_dict(obj, entity_type))
+                        entity_dict = self.service._entity_to_dict(obj, entity_type)
+                        entities.append(entity_dict)
                 else:
-                    for et in VALID_ENTITY_TYPES:
+                    # Search across all entity types
+                    entity_types = valid_types
+                    for et in entity_types:
                         try:
                             entity_objects = self.service.list_entities(
                                 et,
@@ -208,29 +182,41 @@ class KankaOperations:
                                 limit=0,
                                 last_sync=last_synced,
                                 related=include_full,
+                                tag_ids=combined_tag_ids,
                             )
                             for obj in entity_objects:
-                                entities.append(self.service._entity_to_dict(obj, et))
+                                entity_dict = self.service._entity_to_dict(obj, et)
+                                entities.append(entity_dict)
                         except Exception as e:
                             logger.debug(f"Could not search {et}: {e}")
                             continue
 
+                # Apply content search
                 entities = search_in_content(entities, query)
 
+                # If not including full details, strip to minimal data
                 if not include_full:
-                    entities = [
-                        {
-                            "entity_id": e["entity_id"],
-                            "name": e["name"],
-                            "entity_type": e["entity_type"],
-                        }
-                        for e in entities
-                    ]
+                    minimal_entities = []
+                    for entity in entities:
+                        minimal_entities.append(
+                            {
+                                "entity_id": entity["entity_id"],
+                                "name": entity["name"],
+                                "entity_type": entity["entity_type"],
+                            }
+                        )
+                    entities = minimal_entities
             else:
+                # List entities of specific type (no search)
                 if not entity_type:
+                    # No entity type specified, can't list all
                     return {"entities": [], "sync_info": {}}
 
+                # Get all entities of this type
+                # Cast to EntityType since we validated it above
                 from typing import cast
+
+                from .types import EntityType
 
                 entity_objects = self.service.list_entities(
                     cast(EntityType, entity_type),
@@ -238,31 +224,43 @@ class KankaOperations:
                     limit=0,
                     last_sync=last_synced,
                     related=include_full,
+                    tag_ids=combined_tag_ids,
                 )
-                entities = [
-                    self.service._entity_to_dict(obj, entity_type)
-                    for obj in entity_objects
-                ]
 
-            # Client-side filters
+                # Convert to dictionaries
+                entities = []
+                for obj in entity_objects:
+                    entity_dict = self.service._entity_to_dict(obj, entity_type)
+                    entities.append(entity_dict)
+
+            # Step 2: Apply client-side filters
             if name:
                 entities = filter_entities_by_name(
                     entities, name, exact=name_exact, fuzzy=name_fuzzy
                 )
+
             if type:
                 entities = filter_entities_by_type(entities, type)
-            if tags:
-                entities = filter_entities_by_tags(entities, tags)
+
+            if client_tag_names:
+                entities = filter_entities_by_tags(entities, client_tag_names)
+
             if date_range and entity_type == "journal":
                 start = date_range.get("start")
                 end = date_range.get("end")
                 if start and end:
                     entities = filter_journals_by_date_range(entities, start, end)
 
+            # Don't apply content search if we already used the search API
+            # The search API already searched content
+
+            # Step 3: Paginate results
             paginated, total_pages, total_items = paginate_results(
                 entities, page, limit
             )
 
+            # Step 4: Calculate sync metadata
+            # Find newest updated_at timestamp
             newest_updated_at = None
             for entity in paginated:
                 if entity.get("updated_at") and (
@@ -271,14 +269,18 @@ class KankaOperations:
                 ):
                     newest_updated_at = entity["updated_at"]
 
+            # Build sync info
             sync_info = {
                 "request_timestamp": datetime.now(timezone.utc).isoformat(),
                 "newest_updated_at": newest_updated_at,
                 "total_count": total_items,
+                "last_page": total_pages,
                 "returned_count": len(paginated),
             }
 
+            # Step 5: Format results based on include_full
             if not include_full:
+                # Return minimal data
                 formatted_entities = [
                     {
                         "entity_id": e["entity_id"],
@@ -288,8 +290,10 @@ class KankaOperations:
                     for e in paginated
                 ]
             else:
+                # Return full data
                 formatted_entities = paginated
 
+            # Return the new response structure
             return {
                 "entities": formatted_entities,
                 "sync_info": sync_info,
@@ -299,59 +303,65 @@ class KankaOperations:
             logger.error(f"find_entities failed: {e}")
             raise
 
+    async def search_entities(
+        self, search_term: str, page: int = 1
+    ) -> list[dict[str, Any]]:
+        """Search across all entity types (global search endpoint)."""
+        if not search_term:
+            return []
+        return self.service.global_search_entities(search_term, page=page)
+
     async def create_entities(
         self, entities: list[dict[str, Any]]
     ) -> list[CreateEntityResult]:
-        """Create one or more entities."""
-        results: list[CreateEntityResult] = []
+        """Create one or more entities.
+
+        Args:
+            entities: List of entity data to create
+
+        Returns:
+            List of results, one per entity (success or failure)
+        """
+        results = []
+        from .types import EntityType
+
+        valid_types = list(get_args(EntityType))
 
         for entity_input in entities:
             entity_type = entity_input.get("entity_type")
             entity_name = entity_input.get("name", "")
 
-            if not entity_type or entity_type not in VALID_ENTITY_TYPES:
-                results.append(
-                    {
-                        "id": None,
-                        "entity_id": None,
-                        "name": entity_name,
-                        "mention": None,
-                        "success": False,
-                        "error": (
-                            f"Invalid entity_type '{entity_type}'. "
-                            f"Must be one of: {', '.join(VALID_ENTITY_TYPES)}"
-                        ),
-                    }
+            # Validate entity type
+            if not entity_type or entity_type not in valid_types:
+                logger.error(
+                    f"Invalid entity_type '{entity_type}' for entity '{entity_name}'"
                 )
+                error_result: CreateEntityResult = {
+                    "id": None,
+                    "entity_id": None,
+                    "name": entity_name,
+                    "mention": None,
+                    "success": False,
+                    "error": f"Invalid entity_type '{entity_type}'. Must be one of: {', '.join(valid_types)}",
+                }
+                results.append(error_result)
                 continue
 
+            # Validate required fields
             if not entity_name:
-                results.append(
-                    {
-                        "id": None,
-                        "entity_id": None,
-                        "name": "",
-                        "mention": None,
-                        "success": False,
-                        "error": "Name is required",
-                    }
-                )
+                name_error: CreateEntityResult = {
+                    "id": None,
+                    "entity_id": None,
+                    "name": "",
+                    "mention": None,
+                    "success": False,
+                    "error": "Name is required",
+                }
+                results.append(name_error)
                 continue
-
-            # Extract reminder (birth/death/founded) for age calc - not passed to create_entity
-            reminder = entity_input.get("reminder")
-            if reminder and entity_type not in (
-                "character",
-                "location",
-                "organization",
-                "family",
-            ):
-                reminder = None  # Only these entity types support age reminders
-            extra = self._extract_extra_fields(entity_input)
-            if reminder:
-                extra = {k: v for k, v in extra.items() if k != "reminder"}
 
             try:
+                # Create entity
                 created = self.service.create_entity(
                     entity_type=entity_type,
                     name=entity_name,
@@ -359,89 +369,66 @@ class KankaOperations:
                     entry=entity_input.get("entry"),
                     tags=entity_input.get("tags"),
                     is_hidden=entity_input.get("is_hidden"),
+                    location_id=entity_input.get("location_id"),
                     is_completed=entity_input.get("is_completed"),
                     image_uuid=entity_input.get("image_uuid"),
                     header_uuid=entity_input.get("header_uuid"),
-                    parent_id=entity_input.get("parent_id"),
-                    **extra,
                 )
-                result_entry = {
+
+                result: CreateEntityResult = {
                     "id": created["id"],
                     "entity_id": created["entity_id"],
                     "name": created["name"],
-                    "mention": created.get("mention"),
+                    "mention": created["mention"],
                     "success": True,
                     "error": None,
                 }
-
-                # Add reminder (birth/death/founded) for age calculation
-                if reminder and created.get("entity_id"):
-                    event_type = reminder.get("type", "birth")
-                    try:
-                        self.service.create_calendar_reminder(
-                            entity_id=created["entity_id"],
-                            calendar_id=reminder["calendar_id"],
-                            year=reminder["year"],
-                            month=reminder["month"],
-                            day=reminder["day"],
-                            length=1,
-                            event_type=event_type,
-                        )
-                        result_entry["reminder_added"] = True
-                    except Exception as r_err:
-                        logger.warning(
-                            f"Failed to add reminder for {created['entity_id']}: {r_err}"
-                        )
-                        result_entry["reminder_added"] = False
-                        result_entry["reminder_error"] = str(r_err)
-
-                results.append(result_entry)
+                results.append(result)
 
             except Exception as e:
-                logger.error(f"Failed to create entity '{entity_name}': {e}")
-                results.append(
-                    {
-                        "id": None,
-                        "entity_id": None,
-                        "name": entity_name,
-                        "mention": None,
-                        "success": False,
-                        "error": str(e),
-                    }
+                logger.error(
+                    f"Failed to create entity '{entity_input.get('name')}': {e}"
                 )
+                create_error: CreateEntityResult = {
+                    "id": None,
+                    "entity_id": None,
+                    "name": entity_input.get("name", ""),
+                    "mention": None,
+                    "success": False,
+                    "error": str(e),
+                }
+                results.append(create_error)
 
         return results
 
     async def update_entities(
         self, updates: list[dict[str, Any]]
     ) -> list[UpdateEntityResult]:
-        """Update one or more entities."""
-        results: list[UpdateEntityResult] = []
+        """Update one or more entities.
 
+        Args:
+            updates: List of entity updates to apply
+
+        Returns:
+            List of results, one per entity (success or failure)
+        """
+        results = []
         for update in updates:
             entity_id = update.get("entity_id")
-            name = update.get("name")
+            name = update.get("name")  # Optional for PATCH-like updates
 
+            # Validate required fields
             if not entity_id:
-                results.append(
-                    {"entity_id": 0, "success": False, "error": "entity_id is required"}
-                )
-                continue
-
-            if not name:
-                results.append(
-                    {
-                        "entity_id": entity_id,
-                        "success": False,
-                        "error": "name is required for updates (Kanka API requirement)",
-                    }
-                )
+                id_error: UpdateEntityResult = {
+                    "entity_id": 0,
+                    "success": False,
+                    "error": "entity_id is required",
+                }
+                results.append(id_error)
                 continue
 
             try:
-                extra = self._extract_extra_fields(update)
-                if update.get("clear_parent"):
-                    extra["clear_parent"] = True
+                # Update entity
                 success = self.service.update_entity(
                     entity_id=entity_id,
                     name=name,
@@ -449,32 +436,46 @@ class KankaOperations:
                     entry=update.get("entry"),
                     tags=update.get("tags"),
                     is_hidden=update.get("is_hidden"),
+                    location_id=update.get("location_id"),
                     is_completed=update.get("is_completed"),
                     image_uuid=update.get("image_uuid"),
                     header_uuid=update.get("header_uuid"),
-                    parent_id=update.get("parent_id"),
-                    **extra,
-                )
-                results.append(
-                    {"entity_id": entity_id, "success": success, "error": None}
                 )
 
+                result: UpdateEntityResult = {
+                    "entity_id": update["entity_id"],
+                    "success": success,
+                    "error": None,
+                }
+                results.append(result)
+
             except Exception as e:
-                logger.error(f"Failed to update entity {entity_id}: {e}")
-                results.append(
-                    {"entity_id": entity_id, "success": False, "error": str(e)}
-                )
+                logger.error(f"Failed to update entity {update['entity_id']}: {e}")
+                update_error: UpdateEntityResult = {
+                    "entity_id": update["entity_id"],
+                    "success": False,
+                    "error": str(e),
+                }
+                results.append(update_error)
 
         return results
 
     async def get_entities(
         self, entity_ids: list[int], include_posts: bool = False
     ) -> list[GetEntityResult]:
-        """Get specific entities by ID."""
-        results: list[GetEntityResult] = []
+        """Get specific entities by ID.
 
+        Args:
+            entity_ids: List of entity IDs to retrieve
+            include_posts: Whether to include posts for each entity
+
+        Returns:
+            List of results, one per entity
+        """
+        results = []
         for entity_id in entity_ids:
             try:
+                # Get entity
                 entity = self.service.get_entity_by_id(entity_id, include_posts)
 
                 if entity:
@@ -491,1653 +492,1021 @@ class KankaOperations:
                         "updated_at": entity.get("updated_at"),
                         "success": True,
                         "error": None,
-                        "parent_id": entity.get("parent_id"),
-                        "image": entity.get("image"),
-                        "image_full": entity.get("image_full"),
-                        "image_thumb": entity.get("image_thumb"),
-                        "image_uuid": entity.get("image_uuid"),
-                        "header_uuid": entity.get("header_uuid"),
                     }
 
-                    # Forward all entity-specific fields present in the dict
-                    for key in _EXTRA_FIELD_KEYS:
-                        if key in entity:
-                            result[key] = entity[key]  # type: ignore[literal-required]
-
-                    # Quest-specific
+                    # Add quest-specific fields
                     if entity.get("entity_type") == "quest":
                         result["is_completed"] = entity.get("is_completed")
+
+                    # Add all image fields (they should always be present from service layer)
+                    result["image"] = entity.get("image")
+                    result["image_full"] = entity.get("image_full")
+                    result["image_thumb"] = entity.get("image_thumb")
+                    result["image_uuid"] = entity.get("image_uuid")
+                    result["header_uuid"] = entity.get("header_uuid")
 
                     if include_posts:
                         result["posts"] = entity.get("posts", [])
 
                     results.append(result)
                 else:
-                    results.append(
-                        {
-                            "entity_id": entity_id,
-                            "success": False,
-                            "error": f"Entity {entity_id} not found",
-                        }
-                    )
+                    not_found_result: GetEntityResult = {
+                        "entity_id": entity_id,
+                        "success": False,
+                        "error": f"Entity {entity_id} not found",
+                    }
+                    results.append(not_found_result)
 
             except Exception as e:
                 logger.error(f"Failed to get entity {entity_id}: {e}")
-                results.append(
-                    {"entity_id": entity_id, "success": False, "error": str(e)}
-                )
+                error_result: GetEntityResult = {
+                    "entity_id": entity_id,
+                    "success": False,
+                    "error": str(e),
+                }
+                results.append(error_result)
 
         return results
 
     async def delete_entities(self, entity_ids: list[int]) -> list[DeleteEntityResult]:
-        """Delete one or more entities."""
-        results: list[DeleteEntityResult] = []
+        """Delete one or more entities.
 
+        Args:
+            entity_ids: List of entity IDs to delete
+
+        Returns:
+            List of results, one per entity
+        """
+        results = []
         for entity_id in entity_ids:
             try:
+                # Delete entity
                 success = self.service.delete_entity(entity_id)
-                results.append(
-                    {"entity_id": entity_id, "success": success, "error": None}
-                )
+
+                result: DeleteEntityResult = {
+                    "entity_id": entity_id,
+                    "success": success,
+                    "error": None,
+                }
+                results.append(result)
+
             except Exception as e:
                 logger.error(f"Failed to delete entity {entity_id}: {e}")
-                results.append(
-                    {"entity_id": entity_id, "success": False, "error": str(e)}
-                )
+                error_result: DeleteEntityResult = {
+                    "entity_id": entity_id,
+                    "success": False,
+                    "error": str(e),
+                }
+                results.append(error_result)
 
         return results
 
-    # ---- Post operations ----
-
     async def create_posts(self, posts: list[dict[str, Any]]) -> list[CreatePostResult]:
-        """Create posts on entities."""
-        results: list[CreatePostResult] = []
+        """Create posts on entities.
 
+        Args:
+            posts: List of post data to create
+
+        Returns:
+            List of results, one per post
+        """
+        results = []
         for post_input in posts:
             try:
+                # Create post
                 created = self.service.create_post(
                     entity_id=post_input["entity_id"],
                     name=post_input["name"],
                     entry=post_input.get("entry"),
                     is_hidden=post_input.get("is_hidden", False),
                 )
-                results.append(
-                    {
-                        "post_id": created["post_id"],
-                        "entity_id": created["entity_id"],
-                        "success": True,
-                        "error": None,
-                    }
-                )
+
+                result: CreatePostResult = {
+                    "post_id": created["post_id"],
+                    "entity_id": created["entity_id"],
+                    "success": True,
+                    "error": None,
+                }
+                results.append(result)
+
             except Exception as e:
                 logger.error(
                     f"Failed to create post on entity {post_input['entity_id']}: {e}"
                 )
-                results.append(
-                    {
-                        "post_id": None,
-                        "entity_id": post_input["entity_id"],
-                        "success": False,
-                        "error": str(e),
-                    }
-                )
+                error_result: CreatePostResult = {
+                    "post_id": None,
+                    "entity_id": post_input["entity_id"],
+                    "success": False,
+                    "error": str(e),
+                }
+                results.append(error_result)
 
         return results
 
     async def update_posts(
         self, updates: list[dict[str, Any]]
     ) -> list[UpdatePostResult]:
-        """Update existing posts."""
-        results: list[UpdatePostResult] = []
+        """Update existing posts.
 
+        Args:
+            updates: List of post updates to apply
+
+        Returns:
+            List of results, one per post
+        """
+        results = []
         for update in updates:
             try:
+                # Update post
+                entity_id = update.get("entity_id")
+                post_id = update.get("post_id")
+                name = update.get("name")  # Optional for PATCH-like updates
+
+                if not entity_id or not post_id:
+                    result: UpdatePostResult = {
+                        "entity_id": entity_id or 0,
+                        "post_id": post_id or 0,
+                        "success": False,
+                        "error": "entity_id and post_id are required",
+                    }
+                    results.append(result)
+                    continue
+
                 success = self.service.update_post(
-                    entity_id=update["entity_id"],
-                    post_id=update["post_id"],
-                    name=update["name"],
+                    entity_id=entity_id,
+                    post_id=post_id,
+                    name=name,
                     entry=update.get("entry"),
                     is_hidden=update.get("is_hidden"),
                 )
-                results.append(
-                    {
-                        "entity_id": update["entity_id"],
-                        "post_id": update["post_id"],
-                        "success": success,
-                        "error": None,
-                    }
-                )
+
+                result: UpdatePostResult = {
+                    "entity_id": update["entity_id"],
+                    "post_id": update["post_id"],
+                    "success": success,
+                    "error": None,
+                }
+                results.append(result)
+
             except Exception as e:
                 logger.error(
                     f"Failed to update post {update['post_id']} on entity {update['entity_id']}: {e}"
                 )
-                results.append(
-                    {
-                        "entity_id": update["entity_id"],
-                        "post_id": update["post_id"],
-                        "success": False,
-                        "error": str(e),
-                    }
-                )
+                error_result: UpdatePostResult = {
+                    "entity_id": update["entity_id"],
+                    "post_id": update["post_id"],
+                    "success": False,
+                    "error": str(e),
+                }
+                results.append(error_result)
 
         return results
 
     async def delete_posts(
         self, deletions: list[dict[str, Any]]
     ) -> list[DeletePostResult]:
-        """Delete posts from entities."""
-        results: list[DeletePostResult] = []
+        """Delete posts from entities.
 
+        Args:
+            deletions: List of post deletions to perform
+
+        Returns:
+            List of results, one per post
+        """
+        results = []
         for deletion in deletions:
             try:
+                # Delete post
                 success = self.service.delete_post(
                     entity_id=deletion["entity_id"],
                     post_id=deletion["post_id"],
                 )
-                results.append(
-                    {
-                        "entity_id": deletion["entity_id"],
-                        "post_id": deletion["post_id"],
-                        "success": success,
-                        "error": None,
-                    }
-                )
+
+                result: DeletePostResult = {
+                    "entity_id": deletion["entity_id"],
+                    "post_id": deletion["post_id"],
+                    "success": success,
+                    "error": None,
+                }
+                results.append(result)
+
             except Exception as e:
                 logger.error(
                     f"Failed to delete post {deletion['post_id']} from entity {deletion['entity_id']}: {e}"
                 )
-                results.append(
-                    {
-                        "entity_id": deletion["entity_id"],
-                        "post_id": deletion["post_id"],
-                        "success": False,
-                        "error": str(e),
-                    }
-                )
+                error_result: DeletePostResult = {
+                    "entity_id": deletion["entity_id"],
+                    "post_id": deletion["post_id"],
+                    "success": False,
+                    "error": str(e),
+                }
+                results.append(error_result)
 
         return results
-
-    # ---- Sub-resource: Relations ----
-
-    async def manage_relations(
-        self, actions: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        """Execute a batch of relation actions (create/update/delete/list)."""
-        results: list[dict[str, Any]] = []
-
-        for action_input in actions:
-            action = action_input.get("action", "")
-            entity_id = action_input.get("entity_id")
-
-            if not entity_id:
-                results.append(
-                    {
-                        "action": action,
-                        "entity_id": 0,
-                        "success": False,
-                        "error": "entity_id is required",
-                    }
-                )
-                continue
-
-            try:
-                if action == "list":
-                    relations = self.service.list_relations(entity_id)
-                    results.append(
-                        {
-                            "action": "list",
-                            "entity_id": entity_id,
-                            "success": True,
-                            "error": None,
-                            "relations": relations,
-                        }
-                    )
-
-                elif action == "create":
-                    target_id = action_input.get("target_id")
-                    relation_label = action_input.get("relation")
-                    if not target_id or not relation_label:
-                        results.append(
-                            {
-                                "action": "create",
-                                "entity_id": entity_id,
-                                "success": False,
-                                "error": "target_id and relation are required",
-                            }
-                        )
-                        continue
-
-                    rel = self.service.create_relation(
-                        entity_id=entity_id,
-                        target_id=target_id,
-                        relation=relation_label,
-                        attitude=action_input.get("attitude"),
-                        two_way=action_input.get("two_way"),
-                        colour=action_input.get("colour"),
-                        is_pinned=action_input.get("is_pinned"),
-                        is_hidden=action_input.get("is_hidden"),
-                    )
-                    results.append(
-                        {
-                            "action": "create",
-                            "entity_id": entity_id,
-                            "relation_id": rel.get("id"),
-                            "success": True,
-                            "error": None,
-                            "relation": rel,
-                        }
-                    )
-
-                elif action == "update":
-                    relation_id = action_input.get("relation_id")
-                    if not relation_id:
-                        results.append(
-                            {
-                                "action": "update",
-                                "entity_id": entity_id,
-                                "success": False,
-                                "error": "relation_id is required",
-                            }
-                        )
-                        continue
-                    fields = {
-                        k: action_input[k]
-                        for k in (
-                            "relation",
-                            "target_id",
-                            "attitude",
-                            "two_way",
-                            "colour",
-                            "is_pinned",
-                            "is_hidden",
-                        )
-                        if k in action_input
-                    }
-                    rel = self.service.update_relation(entity_id, relation_id, **fields)
-                    results.append(
-                        {
-                            "action": "update",
-                            "entity_id": entity_id,
-                            "relation_id": relation_id,
-                            "success": True,
-                            "error": None,
-                            "relation": rel,
-                        }
-                    )
-
-                elif action == "delete":
-                    relation_id = action_input.get("relation_id")
-                    if not relation_id:
-                        results.append(
-                            {
-                                "action": "delete",
-                                "entity_id": entity_id,
-                                "success": False,
-                                "error": "relation_id is required",
-                            }
-                        )
-                        continue
-                    self.service.delete_relation(entity_id, relation_id)
-                    results.append(
-                        {
-                            "action": "delete",
-                            "entity_id": entity_id,
-                            "relation_id": relation_id,
-                            "success": True,
-                            "error": None,
-                        }
-                    )
-
-                else:
-                    results.append(
-                        {
-                            "action": action,
-                            "entity_id": entity_id,
-                            "success": False,
-                            "error": f"Unknown action '{action}'",
-                        }
-                    )
-
-            except Exception as e:
-                logger.error(
-                    f"Relation action '{action}' failed for entity {entity_id}: {e}"
-                )
-                results.append(
-                    {
-                        "action": action,
-                        "entity_id": entity_id,
-                        "success": False,
-                        "error": str(e),
-                    }
-                )
-
-        return results
-
-    # ---- Sub-resource: Attributes ----
-
-    async def manage_attributes(
-        self, actions: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        """Execute a batch of attribute actions (create/update/delete/list/bulk_patch)."""
-        results: list[dict[str, Any]] = []
-
-        for action_input in actions:
-            action = action_input.get("action", "")
-            entity_id = action_input.get("entity_id")
-
-            if not entity_id:
-                results.append(
-                    {
-                        "action": action,
-                        "entity_id": 0,
-                        "success": False,
-                        "error": "entity_id is required",
-                    }
-                )
-                continue
-
-            try:
-                if action == "list":
-                    attrs = self.service.list_attributes(entity_id)
-                    results.append(
-                        {
-                            "action": "list",
-                            "entity_id": entity_id,
-                            "success": True,
-                            "error": None,
-                            "attributes": attrs,
-                        }
-                    )
-
-                elif action == "create":
-                    attr_name = action_input.get("name")
-                    if not attr_name:
-                        results.append(
-                            {
-                                "action": "create",
-                                "entity_id": entity_id,
-                                "success": False,
-                                "error": "name is required",
-                            }
-                        )
-                        continue
-                    attr = self.service.create_attribute(
-                        entity_id=entity_id,
-                        name=attr_name,
-                        value=action_input.get("value"),
-                        type_id=action_input.get("type_id"),
-                        is_pinned=action_input.get("is_pinned"),
-                        is_hidden=action_input.get("is_hidden"),
-                        api_key=action_input.get("api_key"),
-                        default_order=action_input.get("default_order"),
-                    )
-                    results.append(
-                        {
-                            "action": "create",
-                            "entity_id": entity_id,
-                            "attribute_id": attr.get("id"),
-                            "success": True,
-                            "error": None,
-                            "attribute": attr,
-                        }
-                    )
-
-                elif action == "update":
-                    attribute_id = action_input.get("attribute_id")
-                    if not attribute_id:
-                        results.append(
-                            {
-                                "action": "update",
-                                "entity_id": entity_id,
-                                "success": False,
-                                "error": "attribute_id is required",
-                            }
-                        )
-                        continue
-                    fields = {
-                        k: action_input[k]
-                        for k in (
-                            "name",
-                            "value",
-                            "type_id",
-                            "is_pinned",
-                            "is_hidden",
-                            "api_key",
-                            "default_order",
-                        )
-                        if k in action_input
-                    }
-                    attr = self.service.update_attribute(
-                        entity_id, attribute_id, **fields
-                    )
-                    results.append(
-                        {
-                            "action": "update",
-                            "entity_id": entity_id,
-                            "attribute_id": attribute_id,
-                            "success": True,
-                            "error": None,
-                            "attribute": attr,
-                        }
-                    )
-
-                elif action == "delete":
-                    attribute_id = action_input.get("attribute_id")
-                    if not attribute_id:
-                        results.append(
-                            {
-                                "action": "delete",
-                                "entity_id": entity_id,
-                                "success": False,
-                                "error": "attribute_id is required",
-                            }
-                        )
-                        continue
-                    self.service.delete_attribute(entity_id, attribute_id)
-                    results.append(
-                        {
-                            "action": "delete",
-                            "entity_id": entity_id,
-                            "attribute_id": attribute_id,
-                            "success": True,
-                            "error": None,
-                        }
-                    )
-
-                elif action == "bulk_patch":
-                    attributes = action_input.get("attributes", [])
-                    if not attributes:
-                        results.append(
-                            {
-                                "action": "bulk_patch",
-                                "entity_id": entity_id,
-                                "success": False,
-                                "error": "attributes array is required",
-                            }
-                        )
-                        continue
-                    patched = self.service.bulk_patch_attributes(entity_id, attributes)
-                    results.append(
-                        {
-                            "action": "bulk_patch",
-                            "entity_id": entity_id,
-                            "success": True,
-                            "error": None,
-                            "attributes": patched,
-                        }
-                    )
-
-                else:
-                    results.append(
-                        {
-                            "action": action,
-                            "entity_id": entity_id,
-                            "success": False,
-                            "error": f"Unknown action '{action}'",
-                        }
-                    )
-
-            except Exception as e:
-                logger.error(
-                    f"Attribute action '{action}' failed for entity {entity_id}: {e}"
-                )
-                results.append(
-                    {
-                        "action": action,
-                        "entity_id": entity_id,
-                        "success": False,
-                        "error": str(e),
-                    }
-                )
-
-        return results
-
-    # ---- Sub-resource: Organisation Members ----
-
-    async def manage_organisation_members(
-        self, actions: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        """Execute a batch of organisation member actions (create/update/delete/list)."""
-        results: list[dict[str, Any]] = []
-
-        for action_input in actions:
-            action = action_input.get("action", "")
-            organisation_id = action_input.get("organisation_id")
-
-            if not organisation_id:
-                results.append(
-                    {
-                        "action": action,
-                        "organisation_id": 0,
-                        "success": False,
-                        "error": "organisation_id is required",
-                    }
-                )
-                continue
-
-            try:
-                if action == "list":
-                    members = self.service.list_org_members(organisation_id)
-                    results.append(
-                        {
-                            "action": "list",
-                            "organisation_id": organisation_id,
-                            "success": True,
-                            "error": None,
-                            "members": members,
-                        }
-                    )
-
-                elif action == "create":
-                    character_id = action_input.get("character_id")
-                    if not character_id:
-                        results.append(
-                            {
-                                "action": "create",
-                                "organisation_id": organisation_id,
-                                "success": False,
-                                "error": "character_id is required",
-                            }
-                        )
-                        continue
-                    member = self.service.create_org_member(
-                        organisation_id=organisation_id,
-                        character_id=character_id,
-                        role=action_input.get("role"),
-                        is_hidden=action_input.get("is_hidden"),
-                        status_id=action_input.get("status_id"),
-                        parent_id=action_input.get("parent_id"),
-                        pin_id=action_input.get("pin_id"),
-                    )
-                    results.append(
-                        {
-                            "action": "create",
-                            "organisation_id": organisation_id,
-                            "member_id": member.get("id"),
-                            "success": True,
-                            "error": None,
-                            "member": member,
-                        }
-                    )
-
-                elif action == "update":
-                    member_id = action_input.get("member_id")
-                    if not member_id:
-                        results.append(
-                            {
-                                "action": "update",
-                                "organisation_id": organisation_id,
-                                "success": False,
-                                "error": "member_id is required",
-                            }
-                        )
-                        continue
-                    fields = {
-                        k: action_input[k]
-                        for k in (
-                            "character_id",
-                            "role",
-                            "is_hidden",
-                            "status_id",
-                            "parent_id",
-                            "pin_id",
-                        )
-                        if k in action_input
-                    }
-                    member = self.service.update_org_member(
-                        organisation_id, member_id, **fields
-                    )
-                    results.append(
-                        {
-                            "action": "update",
-                            "organisation_id": organisation_id,
-                            "member_id": member_id,
-                            "success": True,
-                            "error": None,
-                            "member": member,
-                        }
-                    )
-
-                elif action == "delete":
-                    member_id = action_input.get("member_id")
-                    if not member_id:
-                        results.append(
-                            {
-                                "action": "delete",
-                                "organisation_id": organisation_id,
-                                "success": False,
-                                "error": "member_id is required",
-                            }
-                        )
-                        continue
-                    self.service.delete_org_member(organisation_id, member_id)
-                    results.append(
-                        {
-                            "action": "delete",
-                            "organisation_id": organisation_id,
-                            "member_id": member_id,
-                            "success": True,
-                            "error": None,
-                        }
-                    )
-
-                else:
-                    results.append(
-                        {
-                            "action": action,
-                            "organisation_id": organisation_id,
-                            "success": False,
-                            "error": f"Unknown action '{action}'",
-                        }
-                    )
-
-            except Exception as e:
-                logger.error(
-                    f"Org member action '{action}' failed for org {organisation_id}: {e}"
-                )
-                results.append(
-                    {
-                        "action": action,
-                        "organisation_id": organisation_id,
-                        "success": False,
-                        "error": str(e),
-                    }
-                )
-
-        return results
-
-    # ---- Sub-resource: Map Markers ----
 
     async def manage_map_markers(
-        self, actions: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        """Execute a batch of map marker actions (create/update/delete/list)."""
-        results: list[dict[str, Any]] = []
+        self,
+        action: str,
+        map_id: int,
+        marker_id: int | None = None,
+        page: int = 1,
+        limit: int = 30,
+        **fields: Any,
+    ) -> dict[str, Any]:
+        """Manage map markers for a map (list/create/update/delete)."""
 
-        for action_input in actions:
-            action = action_input.get("action", "")
-            map_id = action_input.get("map_id")
+        marker_fields = {
+            # Conditional identity
+            "name",
+            "entity_id",
+            # Required/geometry
+            "latitude",
+            "longitude",
+            "shape_id",
+            "icon",
+            # Optional/create/update fields
+            "group_id",
+            "is_draggable",
+            "is_popupless",
+            "custom_shape",
+            "custom_icon",
+            "size_id",
+            "opacity",
+            "visibility_id",
+            "colour",
+            "font_colour",
+            "circle_radius",
+            "polygon_style",
+            "css",
+        }
 
-            if not map_id:
-                results.append(
-                    {
-                        "action": action,
-                        "map_id": 0,
-                        "success": False,
-                        "error": "map_id is required (map's entity_id)",
-                    }
-                )
-                continue
+        action = action.lower()
+        provided_fields = {k: v for k, v in fields.items() if k in marker_fields}
 
-            try:
-                if action == "list":
-                    markers = self.service.list_map_markers(map_id)
-                    results.append(
-                        {
-                            "action": "list",
-                            "map_id": map_id,
-                            "success": True,
-                            "error": None,
-                            "markers": markers,
-                        }
-                    )
+        if action == "list":
+            return self.service.list_map_markers(map_id=map_id, page=page, limit=limit)
 
-                elif action == "create":
-                    marker = self.service.create_map_marker(
-                        map_id=map_id,
-                        name=action_input.get("name"),
-                        entity_id=action_input.get("entity_id"),
-                        latitude=action_input.get("latitude"),
-                        longitude=action_input.get("longitude"),
-                        shape_id=action_input.get("shape_id"),
-                        icon=action_input.get("icon"),
-                        group_id=action_input.get("group_id"),
-                        is_draggable=action_input.get("is_draggable"),
-                        is_hidden=action_input.get("is_hidden"),
-                    )
-                    results.append(
-                        {
-                            "action": "create",
-                            "map_id": map_id,
-                            "marker_id": marker.get("id"),
-                            "success": True,
-                            "error": None,
-                            "marker": marker,
-                        }
-                    )
-
-                elif action == "update":
-                    marker_id = action_input.get("marker_id")
-                    if not marker_id:
-                        results.append(
-                            {
-                                "action": "update",
-                                "map_id": map_id,
-                                "success": False,
-                                "error": "marker_id is required",
-                            }
-                        )
-                        continue
-                    fields = {
-                        k: action_input[k]
-                        for k in (
-                            "name",
-                            "entity_id",
-                            "latitude",
-                            "longitude",
-                            "shape_id",
-                            "icon",
-                            "group_id",
-                            "is_draggable",
-                            "is_hidden",
-                        )
-                        if k in action_input
-                    }
-                    marker = self.service.update_map_marker(map_id, marker_id, **fields)
-                    results.append(
-                        {
-                            "action": "update",
-                            "map_id": map_id,
-                            "marker_id": marker_id,
-                            "success": True,
-                            "error": None,
-                            "marker": marker,
-                        }
-                    )
-
-                elif action == "delete":
-                    marker_id = action_input.get("marker_id")
-                    if not marker_id:
-                        results.append(
-                            {
-                                "action": "delete",
-                                "map_id": map_id,
-                                "success": False,
-                                "error": "marker_id is required",
-                            }
-                        )
-                        continue
-                    self.service.delete_map_marker(map_id, marker_id)
-                    results.append(
-                        {
-                            "action": "delete",
-                            "map_id": map_id,
-                            "marker_id": marker_id,
-                            "success": True,
-                            "error": None,
-                        }
-                    )
-
-                else:
-                    results.append(
-                        {
-                            "action": action,
-                            "map_id": map_id,
-                            "success": False,
-                            "error": f"Unknown action '{action}'",
-                        }
-                    )
-
-            except Exception as e:
-                logger.error(
-                    f"Map marker action '{action}' failed for map {map_id}: {e}"
-                )
-                results.append(
-                    {
-                        "action": action,
-                        "map_id": map_id,
-                        "success": False,
-                        "error": str(e),
-                    }
+        if action == "create":
+            required_create = {"latitude", "longitude", "shape_id", "icon"}
+            missing = [k for k in required_create if k not in provided_fields]
+            if missing:
+                raise ValueError(
+                    f"Missing required create fields: {', '.join(missing)}"
                 )
 
-        return results
+            has_name = "name" in provided_fields
+            has_entity = "entity_id" in provided_fields
+            if not (has_name or has_entity):
+                raise ValueError("Provide either `name` or `entity_id` for create.")
 
-    # ---- Sub-resource: Map Groups ----
+            payload = dict(provided_fields)
+            return self.service.create_map_marker(map_id=map_id, payload=payload)
 
-    async def manage_map_groups(
-        self, actions: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        """Execute a batch of map group actions (create/update/delete/list)."""
-        results: list[dict[str, Any]] = []
+        if action == "update":
+            if not marker_id:
+                raise ValueError("`marker_id` is required for update.")
+            if not provided_fields:
+                raise ValueError("No fields to update.")
 
-        for action_input in actions:
-            action = action_input.get("action", "")
-            map_id = action_input.get("map_id")
+            # Patch: only include explicitly provided fields (fix: do not overwrite with omitted fields).
+            # Clearing entity_id is handled in KankaService.update_map_marker (auto name merge).
+            payload = dict(provided_fields)
+            return self.service.update_map_marker(
+                map_id=map_id, marker_id=marker_id, payload=payload
+            )
 
-            if not map_id:
-                results.append(
-                    {
-                        "action": action,
-                        "map_id": 0,
-                        "success": False,
-                        "error": "map_id is required (map's entity_id)",
-                    }
-                )
-                continue
+        if action == "delete":
+            if not marker_id:
+                raise ValueError("`marker_id` is required for delete.")
+            return self.service.delete_map_marker(map_id=map_id, marker_id=marker_id)
 
-            try:
-                if action == "list":
-                    groups = self.service.list_map_groups(map_id)
-                    results.append(
-                        {
-                            "action": "list",
-                            "map_id": map_id,
-                            "success": True,
-                            "error": None,
-                            "groups": groups,
-                        }
-                    )
+        raise ValueError(f"Unknown action: {action}")
 
-                elif action == "create":
-                    name = action_input.get("name")
-                    if not name:
-                        results.append(
-                            {
-                                "action": "create",
-                                "map_id": map_id,
-                                "success": False,
-                                "error": "name is required",
-                            }
-                        )
-                        continue
-                    group = self.service.create_map_group(
-                        map_id=map_id,
-                        name=name,
-                        parent_id=action_input.get("parent_id"),
-                        is_shown=action_input.get("is_shown"),
-                        position=action_input.get("position"),
-                        is_hidden=action_input.get("is_hidden"),
-                    )
-                    results.append(
-                        {
-                            "action": "create",
-                            "map_id": map_id,
-                            "group_id": group.get("id"),
-                            "success": True,
-                            "error": None,
-                            "group": group,
-                        }
-                    )
+    async def manage_relations(
+        self,
+        action: str,
+        entity_id: int,
+        relation_id: int | None = None,
+        page: int = 1,
+        limit: int = 30,
+        **fields: Any,
+    ) -> dict[str, Any]:
+        """Manage relations attached to an entity (list/create/update/delete)."""
 
-                elif action == "update":
-                    group_id = action_input.get("group_id")
-                    if not group_id:
-                        results.append(
-                            {
-                                "action": "update",
-                                "map_id": map_id,
-                                "success": False,
-                                "error": "group_id is required",
-                            }
-                        )
-                        continue
-                    fields = {
-                        k: action_input[k]
-                        for k in (
-                            "name",
-                            "parent_id",
-                            "is_shown",
-                            "position",
-                            "is_hidden",
-                        )
-                        if k in action_input
-                    }
-                    group = self.service.update_map_group(map_id, group_id, **fields)
-                    results.append(
-                        {
-                            "action": "update",
-                            "map_id": map_id,
-                            "group_id": group_id,
-                            "success": True,
-                            "error": None,
-                            "group": group,
-                        }
-                    )
+        relation_fields = {
+            "relation",
+            "owner_id",
+            "target_id",
+            "targets",
+            "attitude",
+            "colour",
+            "two_way",
+            "is_pinned",
+            "visibility_id",
+        }
 
-                elif action == "delete":
-                    group_id = action_input.get("group_id")
-                    if not group_id:
-                        results.append(
-                            {
-                                "action": "delete",
-                                "map_id": map_id,
-                                "success": False,
-                                "error": "group_id is required",
-                            }
-                        )
-                        continue
-                    self.service.delete_map_group(map_id, group_id)
-                    results.append(
-                        {
-                            "action": "delete",
-                            "map_id": map_id,
-                            "group_id": group_id,
-                            "success": True,
-                            "error": None,
-                        }
-                    )
+        action = action.lower()
+        provided_fields = {k: v for k, v in fields.items() if k in relation_fields}
 
-                else:
-                    results.append(
-                        {
-                            "action": action,
-                            "map_id": map_id,
-                            "success": False,
-                            "error": f"Unknown action '{action}'",
-                        }
-                    )
+        if action == "list":
+            return self.service.list_relations(
+                entity_id=entity_id, page=page, limit=limit
+            )
 
-            except Exception as e:
-                logger.error(
-                    f"Map group action '{action}' failed for map {map_id}: {e}"
-                )
-                results.append(
-                    {
-                        "action": action,
-                        "map_id": map_id,
-                        "success": False,
-                        "error": str(e),
-                    }
-                )
+        if action == "create":
+            # Required by docs: relation + owner_id and either target_id or targets.
+            if "relation" not in provided_fields:
+                raise ValueError("Missing required create field: relation")
 
-        return results
+            payload = dict(provided_fields)
+            payload.setdefault("owner_id", entity_id)
 
-    # ---- Sub-resource: Map Layers ----
+            if "owner_id" not in payload:
+                raise ValueError("Missing required create field: owner_id")
 
-    async def manage_map_layers(
-        self, actions: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        """Execute a batch of map layer actions (create/update/delete/list)."""
-        results: list[dict[str, Any]] = []
+            if "target_id" not in payload and "targets" not in payload:
+                raise ValueError("Provide either `target_id` or `targets` for create.")
 
-        for action_input in actions:
-            action = action_input.get("action", "")
-            map_id = action_input.get("map_id")
+            return self.service.create_relation(entity_id=entity_id, payload=payload)
 
-            if not map_id:
-                results.append(
-                    {
-                        "action": action,
-                        "map_id": 0,
-                        "success": False,
-                        "error": "map_id is required (map's entity_id)",
-                    }
-                )
-                continue
+        if action == "update":
+            if not relation_id:
+                raise ValueError("`relation_id` is required for update.")
 
-            try:
-                if action == "list":
-                    layers = self.service.list_map_layers(map_id)
-                    results.append(
-                        {
-                            "action": "list",
-                            "map_id": map_id,
-                            "success": True,
-                            "error": None,
-                            "layers": layers,
-                        }
-                    )
+            if not provided_fields:
+                raise ValueError("No update fields provided.")
 
-                elif action == "create":
-                    name = action_input.get("name")
-                    if not name:
-                        results.append(
-                            {
-                                "action": "create",
-                                "map_id": map_id,
-                                "success": False,
-                                "error": "name is required",
-                            }
-                        )
-                        continue
-                    layer = self.service.create_map_layer(
-                        map_id=map_id,
-                        name=name,
-                        image_url=action_input.get("image_url"),
-                        entry=action_input.get("entry"),
-                        type_id=action_input.get("type_id"),
-                        position=action_input.get("position"),
-                        is_hidden=action_input.get("is_hidden"),
-                    )
-                    results.append(
-                        {
-                            "action": "create",
-                            "map_id": map_id,
-                            "layer_id": layer.get("id"),
-                            "success": True,
-                            "error": None,
-                            "layer": layer,
-                        }
-                    )
+            payload = dict(provided_fields)
+            payload.setdefault("owner_id", entity_id)
+            return self.service.update_relation(
+                entity_id=entity_id, relation_id=relation_id, payload=payload
+            )
 
-                elif action == "update":
-                    layer_id = action_input.get("layer_id")
-                    if not layer_id:
-                        results.append(
-                            {
-                                "action": "update",
-                                "map_id": map_id,
-                                "success": False,
-                                "error": "layer_id is required",
-                            }
-                        )
-                        continue
-                    fields = {
-                        k: action_input[k]
-                        for k in (
-                            "name",
-                            "image_url",
-                            "entry",
-                            "type_id",
-                            "position",
-                            "is_hidden",
-                        )
-                        if k in action_input
-                    }
-                    layer = self.service.update_map_layer(map_id, layer_id, **fields)
-                    results.append(
-                        {
-                            "action": "update",
-                            "map_id": map_id,
-                            "layer_id": layer_id,
-                            "success": True,
-                            "error": None,
-                            "layer": layer,
-                        }
-                    )
+        if action == "delete":
+            if not relation_id:
+                raise ValueError("`relation_id` is required for delete.")
+            return self.service.delete_relation(entity_id=entity_id, relation_id=relation_id)
 
-                elif action == "delete":
-                    layer_id = action_input.get("layer_id")
-                    if not layer_id:
-                        results.append(
-                            {
-                                "action": "delete",
-                                "map_id": map_id,
-                                "success": False,
-                                "error": "layer_id is required",
-                            }
-                        )
-                        continue
-                    self.service.delete_map_layer(map_id, layer_id)
-                    results.append(
-                        {
-                            "action": "delete",
-                            "map_id": map_id,
-                            "layer_id": layer_id,
-                            "success": True,
-                            "error": None,
-                        }
-                    )
-
-                else:
-                    results.append(
-                        {
-                            "action": action,
-                            "map_id": map_id,
-                            "success": False,
-                            "error": f"Unknown action '{action}'",
-                        }
-                    )
-
-            except Exception as e:
-                logger.error(
-                    f"Map layer action '{action}' failed for map {map_id}: {e}"
-                )
-                results.append(
-                    {
-                        "action": action,
-                        "map_id": map_id,
-                        "success": False,
-                        "error": str(e),
-                    }
-                )
-
-        return results
-
-    # ---- Sub-resource: Calendar Reminders ----
-
-    async def manage_calendar_reminders(
-        self, actions: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        """Execute calendar reminder actions (create/update/delete/list)."""
-        results: list[dict[str, Any]] = []
-
-        for action_input in actions:
-            action = action_input.get("action", "")
-            calendar_id = action_input.get("calendar_id")
-
-            if not calendar_id:
-                results.append(
-                    {
-                        "action": action,
-                        "calendar_id": 0,
-                        "success": False,
-                        "error": "calendar_id is required (calendar's entity_id)",
-                    }
-                )
-                continue
-
-            try:
-                if action == "list":
-                    reminders = self.service.list_calendar_reminders(calendar_id)
-                    results.append(
-                        {
-                            "action": "list",
-                            "calendar_id": calendar_id,
-                            "success": True,
-                            "error": None,
-                            "reminders": reminders,
-                        }
-                    )
-
-                elif action == "create":
-                    entity_id = action_input.get("entity_id")
-                    year = action_input.get("year")
-                    month = action_input.get("month")
-                    day = action_input.get("day")
-                    if (
-                        entity_id is None
-                        or year is None
-                        or month is None
-                        or day is None
-                    ):
-                        results.append(
-                            {
-                                "action": "create",
-                                "calendar_id": calendar_id,
-                                "success": False,
-                                "error": "entity_id, year, month, day are required",
-                            }
-                        )
-                        continue
-                    reminder = self.service.create_calendar_reminder(
-                        entity_id=entity_id,
-                        calendar_id=calendar_id,
-                        year=year,
-                        month=month,
-                        day=day,
-                        length=action_input.get("length", 1),
-                        name=action_input.get("name"),
-                        comment=action_input.get("comment"),
-                        colour=action_input.get("colour"),
-                        is_recurring=action_input.get("is_recurring"),
-                        recurring_periodicity=action_input.get("recurring_periodicity"),
-                        recurring_until=action_input.get("recurring_until"),
-                        is_hidden=action_input.get("is_hidden"),
-                        event_type=action_input.get("event_type"),
-                    )
-                    results.append(
-                        {
-                            "action": "create",
-                            "calendar_id": calendar_id,
-                            "reminder_id": reminder.get("id"),
-                            "success": True,
-                            "error": None,
-                            "reminder": reminder,
-                        }
-                    )
-
-                elif action == "update":
-                    entity_id = action_input.get("entity_id")
-                    reminder_id = action_input.get("reminder_id")
-                    if not entity_id or not reminder_id:
-                        results.append(
-                            {
-                                "action": "update",
-                                "calendar_id": calendar_id,
-                                "success": False,
-                                "error": "entity_id and reminder_id are required",
-                            }
-                        )
-                        continue
-                    fields = {
-                        k: action_input[k]
-                        for k in (
-                            "year",
-                            "month",
-                            "day",
-                            "length",
-                            "name",
-                            "comment",
-                            "colour",
-                            "is_recurring",
-                            "recurring_periodicity",
-                            "recurring_until",
-                            "is_hidden",
-                            "event_type",
-                        )
-                        if k in action_input
-                    }
-                    reminder = self.service.update_calendar_reminder(
-                        entity_id, reminder_id, **fields
-                    )
-                    results.append(
-                        {
-                            "action": "update",
-                            "calendar_id": calendar_id,
-                            "reminder_id": reminder_id,
-                            "success": True,
-                            "error": None,
-                            "reminder": reminder,
-                        }
-                    )
-
-                elif action == "delete":
-                    entity_id = action_input.get("entity_id")
-                    reminder_id = action_input.get("reminder_id")
-                    if not entity_id or not reminder_id:
-                        results.append(
-                            {
-                                "action": "delete",
-                                "calendar_id": calendar_id,
-                                "success": False,
-                                "error": "entity_id and reminder_id are required",
-                            }
-                        )
-                        continue
-                    self.service.delete_calendar_reminder(entity_id, reminder_id)
-                    results.append(
-                        {
-                            "action": "delete",
-                            "calendar_id": calendar_id,
-                            "reminder_id": reminder_id,
-                            "success": True,
-                            "error": None,
-                        }
-                    )
-
-                else:
-                    results.append(
-                        {
-                            "action": action,
-                            "calendar_id": calendar_id,
-                            "success": False,
-                            "error": f"Unknown action '{action}'",
-                        }
-                    )
-
-            except Exception as e:
-                logger.error(
-                    f"Calendar reminder action '{action}' failed for calendar {calendar_id}: {e}"
-                )
-                results.append(
-                    {
-                        "action": action,
-                        "calendar_id": calendar_id,
-                        "success": False,
-                        "error": str(e),
-                    }
-                )
-
-        return results
-
-    # ---- Sub-resource: Timeline Eras ----
-
-    async def manage_timeline_eras(
-        self, actions: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        """Execute timeline era actions (create/update/delete/list)."""
-        results: list[dict[str, Any]] = []
-
-        for action_input in actions:
-            action = action_input.get("action", "")
-            timeline_id = action_input.get("timeline_id")
-
-            if not timeline_id:
-                results.append(
-                    {
-                        "action": action,
-                        "timeline_id": 0,
-                        "success": False,
-                        "error": "timeline_id is required (timeline's entity_id)",
-                    }
-                )
-                continue
-
-            try:
-                if action == "list":
-                    eras = self.service.list_timeline_eras(timeline_id)
-                    results.append(
-                        {
-                            "action": "list",
-                            "timeline_id": timeline_id,
-                            "success": True,
-                            "error": None,
-                            "eras": eras,
-                        }
-                    )
-
-                elif action == "create":
-                    name = action_input.get("name")
-                    if not name:
-                        results.append(
-                            {
-                                "action": "create",
-                                "timeline_id": timeline_id,
-                                "success": False,
-                                "error": "name is required",
-                            }
-                        )
-                        continue
-                    era = self.service.create_timeline_era(
-                        timeline_id=timeline_id,
-                        name=name,
-                        abbreviation=action_input.get("abbreviation"),
-                        start_year=action_input.get("start_year"),
-                        end_year=action_input.get("end_year"),
-                        visibility=action_input.get("visibility"),
-                    )
-                    results.append(
-                        {
-                            "action": "create",
-                            "timeline_id": timeline_id,
-                            "era_id": era.get("id"),
-                            "success": True,
-                            "error": None,
-                            "era": era,
-                        }
-                    )
-
-                elif action == "update":
-                    era_id = action_input.get("era_id")
-                    if not era_id:
-                        results.append(
-                            {
-                                "action": "update",
-                                "timeline_id": timeline_id,
-                                "success": False,
-                                "error": "era_id is required",
-                            }
-                        )
-                        continue
-                    fields = {
-                        k: action_input[k]
-                        for k in (
-                            "name",
-                            "abbreviation",
-                            "start_year",
-                            "end_year",
-                            "visibility",
-                        )
-                        if k in action_input
-                    }
-                    era = self.service.update_timeline_era(
-                        timeline_id, era_id, **fields
-                    )
-                    results.append(
-                        {
-                            "action": "update",
-                            "timeline_id": timeline_id,
-                            "era_id": era_id,
-                            "success": True,
-                            "error": None,
-                            "era": era,
-                        }
-                    )
-
-                elif action == "delete":
-                    era_id = action_input.get("era_id")
-                    if not era_id:
-                        results.append(
-                            {
-                                "action": "delete",
-                                "timeline_id": timeline_id,
-                                "success": False,
-                                "error": "era_id is required",
-                            }
-                        )
-                        continue
-                    self.service.delete_timeline_era(timeline_id, era_id)
-                    results.append(
-                        {
-                            "action": "delete",
-                            "timeline_id": timeline_id,
-                            "era_id": era_id,
-                            "success": True,
-                            "error": None,
-                        }
-                    )
-
-                else:
-                    results.append(
-                        {
-                            "action": action,
-                            "timeline_id": timeline_id,
-                            "success": False,
-                            "error": f"Unknown action '{action}'",
-                        }
-                    )
-
-            except Exception as e:
-                logger.error(
-                    f"Timeline era action '{action}' failed for timeline {timeline_id}: {e}"
-                )
-                results.append(
-                    {
-                        "action": action,
-                        "timeline_id": timeline_id,
-                        "success": False,
-                        "error": str(e),
-                    }
-                )
-
-        return results
-
-    # ---- Sub-resource: Timeline Elements ----
+        raise ValueError(f"Unknown action: {action}")
 
     async def manage_timeline_elements(
-        self, actions: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        """Execute timeline element actions (create/update/delete/list)."""
-        results: list[dict[str, Any]] = []
+        self,
+        action: str,
+        timeline_id: int,
+        element_id: int | None = None,
+        page: int = 1,
+        limit: int = 15,
+        **fields: Any,
+    ) -> dict[str, Any]:
+        """Manage timeline elements for a timeline (list/create/update/delete)."""
 
-        for action_input in actions:
-            action = action_input.get("action", "")
-            timeline_id = action_input.get("timeline_id")
+        element_fields = {
+            "name",
+            "entity_id",
+            "era_id",
+            "entry",
+            "date",
+            "colour",
+            "position",
+            "visibility_id",
+        }
 
-            if not timeline_id:
-                results.append(
-                    {
-                        "action": action,
-                        "timeline_id": 0,
-                        "success": False,
-                        "error": "timeline_id is required (timeline's entity_id)",
-                    }
-                )
-                continue
+        action = action.lower()
+        provided_fields = {k: v for k, v in fields.items() if k in element_fields}
 
-            try:
-                if action == "list":
-                    elements = self.service.list_timeline_elements(timeline_id)
-                    results.append(
-                        {
-                            "action": "list",
-                            "timeline_id": timeline_id,
-                            "success": True,
-                            "error": None,
-                            "elements": elements,
-                        }
-                    )
+        if action == "list":
+            return self.service.list_timeline_elements(
+                timeline_id=timeline_id, page=page, limit=limit
+            )
 
-                elif action == "create":
-                    era_id = action_input.get("era_id")
-                    if not era_id:
-                        results.append(
-                            {
-                                "action": "create",
-                                "timeline_id": timeline_id,
-                                "success": False,
-                                "error": "era_id is required",
-                            }
-                        )
-                        continue
-                    name = action_input.get("name")
-                    entity_id = action_input.get("entity_id")
-                    if not name and not entity_id:
-                        results.append(
-                            {
-                                "action": "create",
-                                "timeline_id": timeline_id,
-                                "success": False,
-                                "error": "name or entity_id is required",
-                            }
-                        )
-                        continue
-                    element = self.service.create_timeline_element(
-                        timeline_id=timeline_id,
-                        era_id=era_id,
-                        name=name,
-                        entity_id=entity_id,
-                        entry=action_input.get("entry"),
-                        date=action_input.get("date"),
-                        colour=action_input.get("colour"),
-                        position=action_input.get("position"),
-                        is_hidden=action_input.get("is_hidden"),
-                    )
-                    results.append(
-                        {
-                            "action": "create",
-                            "timeline_id": timeline_id,
-                            "element_id": element.get("id"),
-                            "success": True,
-                            "error": None,
-                            "element": element,
-                        }
-                    )
+        if action == "create":
+            if "era_id" not in provided_fields:
+                raise ValueError("Missing required create field: era_id")
 
-                elif action == "update":
-                    element_id = action_input.get("element_id")
-                    if not element_id:
-                        results.append(
-                            {
-                                "action": "update",
-                                "timeline_id": timeline_id,
-                                "success": False,
-                                "error": "element_id is required",
-                            }
-                        )
-                        continue
-                    fields = {
-                        k: action_input[k]
-                        for k in (
-                            "name",
-                            "entity_id",
-                            "entry",
-                            "date",
-                            "colour",
-                            "position",
-                            "is_hidden",
-                        )
-                        if k in action_input
-                    }
-                    element = self.service.update_timeline_element(
-                        timeline_id, element_id, **fields
-                    )
-                    results.append(
-                        {
-                            "action": "update",
-                            "timeline_id": timeline_id,
-                            "element_id": element_id,
-                            "success": True,
-                            "error": None,
-                            "element": element,
-                        }
-                    )
-
-                elif action == "delete":
-                    element_id = action_input.get("element_id")
-                    if not element_id:
-                        results.append(
-                            {
-                                "action": "delete",
-                                "timeline_id": timeline_id,
-                                "success": False,
-                                "error": "element_id is required",
-                            }
-                        )
-                        continue
-                    self.service.delete_timeline_element(timeline_id, element_id)
-                    results.append(
-                        {
-                            "action": "delete",
-                            "timeline_id": timeline_id,
-                            "element_id": element_id,
-                            "success": True,
-                            "error": None,
-                        }
-                    )
-
-                else:
-                    results.append(
-                        {
-                            "action": action,
-                            "timeline_id": timeline_id,
-                            "success": False,
-                            "error": f"Unknown action '{action}'",
-                        }
-                    )
-
-            except Exception as e:
-                logger.error(
-                    f"Timeline element action '{action}' failed for timeline {timeline_id}: {e}"
-                )
-                results.append(
-                    {
-                        "action": action,
-                        "timeline_id": timeline_id,
-                        "success": False,
-                        "error": str(e),
-                    }
+            if "name" not in provided_fields and "entity_id" not in provided_fields:
+                raise ValueError(
+                    "Provide either `name` or `entity_id` for create (name required if entity_id is omitted)."
                 )
 
-        return results
+            payload = dict(provided_fields)
+            return self.service.create_timeline_element(
+                timeline_id=timeline_id, payload=payload
+            )
 
-    # ---- Sync operations ----
+        if action == "update":
+            if not element_id:
+                raise ValueError("`element_id` is required for update.")
+
+            if "name" not in provided_fields and "entity_id" not in provided_fields:
+                raise ValueError(
+                    "For update, provide `name` or `entity_id` (name required if entity_id is omitted)."
+                )
+
+            payload = dict(provided_fields)
+            return self.service.update_timeline_element(
+                timeline_id=timeline_id,
+                element_id=element_id,
+                payload=payload,
+            )
+
+        if action == "delete":
+            if not element_id:
+                raise ValueError("`element_id` is required for delete.")
+            return self.service.delete_timeline_element(
+                timeline_id=timeline_id, element_id=element_id
+            )
+
+        raise ValueError(f"Unknown action: {action}")
+
+    async def manage_attributes(
+        self,
+        action: str,
+        entity_id: int,
+        attribute_id: int | None = None,
+        page: int = 1,
+        limit: int = 30,
+        **fields: Any,
+    ) -> dict[str, Any]:
+        """Manage entity properties/attributes (list/create/update/delete)."""
+        action = action.lower()
+
+        attr_fields = {
+            "name",
+            "value",
+            "type",
+            "type_id",
+            "is_private",
+            "is_star",
+            "position",
+            "api_key",
+        }
+
+        provided_fields = {
+            k: v for k, v in fields.items() if k in attr_fields and v is not None
+        }
+
+        # Map our friendly type + fields to the API property payload.
+        type_to_type_id = {
+            # Kanka entity-attributes docs use numeric type_id values.
+            "text": 1,
+            "number": 6,
+            "checkbox": 3,
+            "section": 4,
+        }
+
+        if action == "list":
+            return self.service.list_attributes(
+                entity_id=entity_id, page=page, limit=limit
+            )
+
+        if action == "create":
+            if "name" not in provided_fields:
+                raise ValueError("Missing required create field: name")
+
+            payload: dict[str, Any] = dict(provided_fields)
+            if "type" in payload:
+                type_str = payload.pop("type")
+                type_id = type_to_type_id.get(type_str)
+                if type_id is None:
+                    raise ValueError(f"Unknown attribute type: {type_str}")
+                payload["type_id"] = type_id
+            if "position" in payload:
+                payload["default_order"] = payload.pop("position")
+            if "is_star" in payload:
+                payload["is_pinned"] = payload.pop("is_star")
+            return self.service.create_attribute(entity_id=entity_id, payload=payload)
+
+        if action == "update":
+            if not attribute_id:
+                raise ValueError("`attribute_id` is required for update.")
+            # Docs: name field is required on update.
+            if "name" not in provided_fields:
+                raise ValueError("Update requires `name` (API requires it).")
+
+            payload = dict(provided_fields)
+            if "type" in payload:
+                type_str = payload.pop("type")
+                type_id = type_to_type_id.get(type_str)
+                if type_id is None:
+                    raise ValueError(f"Unknown attribute type: {type_str}")
+                payload["type_id"] = type_id
+            if "position" in payload:
+                payload["default_order"] = payload.pop("position")
+            if "is_star" in payload:
+                payload["is_pinned"] = payload.pop("is_star")
+
+            return self.service.update_attribute(
+                entity_id=entity_id,
+                attribute_id=attribute_id,
+                payload=payload,
+            )
+
+        if action == "delete":
+            if not attribute_id:
+                raise ValueError("`attribute_id` is required for delete.")
+            return self.service.delete_attribute(
+                entity_id=entity_id, attribute_id=attribute_id
+            )
+
+        raise ValueError(f"Unknown action: {action}")
+
+    async def manage_entity_tags(
+        self,
+        action: str,
+        entity_id: int,
+        tag_id: int | None = None,
+        entity_tag_id: int | None = None,
+        **fields: Any,
+    ) -> dict[str, Any]:
+        """Manage entity tags (list/add/remove)."""
+        action = action.lower()
+
+        if action == "list":
+            return self.service.list_entity_tags(entity_id=entity_id)
+
+        if action == "add":
+            if tag_id is None:
+                raise ValueError("`tag_id` is required for add.")
+            return self.service.add_entity_tag(entity_id=entity_id, tag_id=tag_id)
+
+        if action == "remove":
+            if entity_tag_id is not None:
+                return self.service.remove_entity_tag(
+                    entity_id=entity_id, entity_tag_id=entity_tag_id
+                )
+
+            if tag_id is None:
+                raise ValueError(
+                    "Provide either `entity_tag_id` or `tag_id` for remove."
+                )
+
+            # Resolve tag_id -> entity_tag_id by listing current entity tags.
+            current = self.service.list_entity_tags(entity_id=entity_id)
+            items = current.get("data") or []
+            matching = None
+            for item in items:
+                if item.get("tag_id") == tag_id:
+                    matching = item
+                    break
+
+            if not matching or matching.get("id") is None:
+                raise ValueError(f"Entity tag not found for tag_id={tag_id}")
+
+            return self.service.remove_entity_tag(
+                entity_id=entity_id, entity_tag_id=matching["id"]
+            )
+
+        raise ValueError(f"Unknown action: {action}")
+
+    async def manage_inventory(
+        self,
+        action: str,
+        entity_id: int,
+        inventory_id: int | None = None,
+        page: int = 1,
+        limit: int = 30,
+        **fields: Any,
+    ) -> dict[str, Any]:
+        """Manage entity inventory (list/create/update/delete)."""
+        action = action.lower()
+
+        inv_fields = {
+            "item_id",
+            "name",
+            "amount",
+            "position",
+            "is_equipped",
+            "visibility_id",
+            "visibility",
+            "currency_id",
+        }
+        provided_fields = {
+            k: v for k, v in fields.items() if k in inv_fields and v is not None
+        }
+
+        visibility_id_to_string = {
+            1: "all",
+            2: "self",
+            3: "admin",
+            4: "self-admin",
+            5: "members",
+        }
+
+        if action == "list":
+            return self.service.list_inventory(
+                entity_id=entity_id, page=page, limit=limit
+            )
+
+        if action == "create":
+            if "amount" not in provided_fields:
+                raise ValueError("Missing required create field: amount")
+            if "item_id" not in provided_fields and "name" not in provided_fields:
+                raise ValueError("Provide `item_id` or `name` for create.")
+
+            payload = dict(provided_fields)
+            payload["entity_id"] = entity_id
+
+            # Map visibility_id -> API's `visiblity` string field.
+            if "visibility_id" in payload:
+                vid = payload.pop("visibility_id")
+                vis = visibility_id_to_string.get(vid)
+                if vis is None:
+                    raise ValueError(f"Unknown visibility_id: {vid}")
+                payload["visiblity"] = vis
+            elif "visibility" in payload:
+                payload["visiblity"] = payload.pop("visibility")
+
+            # Docs include `amount` + `position` + `is_equipped` etc as-is.
+            return self.service.create_inventory(entity_id=entity_id, payload=payload)
+
+        if action == "update":
+            if not inventory_id:
+                raise ValueError("`inventory_id` is required for update.")
+            if not provided_fields:
+                raise ValueError("No update fields provided.")
+
+            payload = dict(provided_fields)
+            payload["entity_id"] = entity_id
+
+            if "visibility_id" in payload:
+                vid = payload.pop("visibility_id")
+                vis = visibility_id_to_string.get(vid)
+                if vis is None:
+                    raise ValueError(f"Unknown visibility_id: {vid}")
+                payload["visiblity"] = vis
+            elif "visibility" in payload:
+                payload["visiblity"] = payload.pop("visibility")
+
+            return self.service.update_inventory(
+                entity_id=entity_id,
+                inventory_id=inventory_id,
+                payload=payload,
+            )
+
+        if action == "delete":
+            if not inventory_id:
+                raise ValueError("`inventory_id` is required for delete.")
+            return self.service.delete_inventory(
+                entity_id=entity_id, inventory_id=inventory_id
+            )
+
+        raise ValueError(f"Unknown action: {action}")
+
+    async def manage_permissions(
+        self,
+        action: str,
+        entity_id: int,
+        permission_action: int | None = None,
+        access: bool | None = None,
+        campaign_role_id: int | None = None,
+        user_id: int | None = None,
+        **fields: Any,
+    ) -> dict[str, Any]:
+        """Manage per-entity permissions (list/update)."""
+        action = action.lower()
+
+        if action == "list":
+            return self.service.list_permissions(entity_id=entity_id)
+
+        if action == "update":
+            if permission_action is None:
+                raise ValueError("Missing required field: permission_action")
+            if access is None:
+                raise ValueError("Missing required field: access")
+            if campaign_role_id is None and user_id is None:
+                raise ValueError(
+                    "Provide either `campaign_role_id` or `user_id`."
+                )
+
+            payload: dict[str, Any] = {
+                "action": permission_action,
+                "access": access,
+            }
+            if campaign_role_id is not None:
+                payload["campaign_role_id"] = campaign_role_id
+            if user_id is not None:
+                payload["user_id"] = user_id
+
+            return self.service.create_permission(
+                entity_id=entity_id, payload=payload
+            )
+
+        raise ValueError(f"Unknown action: {action}")
+
+    async def get_archives(self) -> dict[str, Any]:
+        """Retrieve all archived entities."""
+        return self.service.get_archives()
+
+    async def manage_entity_image(
+        self,
+        action: str,
+        entity_id: int,
+        file_path: str | None = None,
+        is_header: bool = False,
+    ) -> dict[str, Any]:
+        """Manage an entity's image (list/upload/remove)."""
+        action = action.lower()
+
+        if action == "list":
+            return self.service.get_entity_image(entity_id=entity_id)
+
+        if action == "upload":
+            if file_path is None:
+                raise ValueError("Provide `file_path` for upload.")
+            return self.service.upload_entity_image_from_file(
+                entity_id=entity_id, file_path=file_path, is_header=is_header
+            )
+
+        if action == "remove":
+            return self.service.remove_entity_image(
+                entity_id=entity_id, is_header=is_header
+            )
+
+        raise ValueError(f"Unknown action: {action}")
+
+    async def manage_calendar_weather(
+        self,
+        action: str,
+        calendar_id: int,
+        calendar_weather_id: int | None = None,
+        page: int = 1,
+        limit: int = 15,
+        **fields: Any,
+    ) -> dict[str, Any]:
+        """Manage calendar weather effects (list/create/update/delete)."""
+        action = action.lower()
+
+        weather_fields = {
+            "year",
+            "month",
+            "day",
+            "weather",
+            "temperature",
+            "precipitation",
+            "wind",
+            "effect",
+            "visibility_id",
+        }
+        provided_fields = {k: v for k, v in fields.items() if k in weather_fields and v is not None}
+
+        if action == "list":
+            return self.service.list_calendar_weather(
+                calendar_id=calendar_id, page=page, limit=limit
+            )
+
+        if action == "create":
+            required_create = {"year", "month", "day", "weather"}
+            missing = [k for k in required_create if k not in provided_fields]
+            if missing:
+                raise ValueError(f"Missing required create fields: {', '.join(missing)}")
+            return self.service.create_calendar_weather(
+                calendar_id=calendar_id, payload=dict(provided_fields)
+            )
+
+        if action == "update":
+            if calendar_weather_id is None:
+                raise ValueError("`calendar_weather_id` is required for update.")
+            if not provided_fields:
+                raise ValueError("No update fields provided.")
+            return self.service.update_calendar_weather(
+                calendar_id=calendar_id,
+                calendar_weather_id=calendar_weather_id,
+                payload=dict(provided_fields),
+            )
+
+        if action == "delete":
+            if calendar_weather_id is None:
+                raise ValueError("`calendar_weather_id` is required for delete.")
+            return self.service.delete_calendar_weather(
+                calendar_id=calendar_id,
+                calendar_weather_id=calendar_weather_id,
+            )
+
+        raise ValueError(f"Unknown action: {action}")
+
+    async def calendar_advance_date(self, calendar_id: int) -> dict[str, Any]:
+        """Advance the calendar date by one day."""
+        return self.service.calendar_advance_date(calendar_id=calendar_id)
+
+    async def calendar_retreat_date(self, calendar_id: int) -> dict[str, Any]:
+        """Retreat the calendar date by one day."""
+        return self.service.calendar_retreat_date(calendar_id=calendar_id)
 
     async def check_entity_updates(
         self, entity_ids: list[int], last_synced: str
     ) -> CheckEntityUpdatesResult:
-        """Check which entities have been modified since last sync."""
+        """Check which entities have been modified since last sync.
+
+        Args:
+            entity_ids: List of entity IDs to check
+            last_synced: ISO timestamp of last sync
+
+        Returns:
+            Result containing modified and deleted entity IDs
+        """
         if not last_synced:
             raise ValueError("last_synced parameter is required")
 
-        modified_entity_ids: list[int] = []
-        deleted_entity_ids: list[int] = []
+        modified_entity_ids = []
+        deleted_entity_ids = []
 
         try:
+            # Get all entities using the entities endpoint
+            # This is more efficient than checking each entity individually
             page = 1
-            all_entities: dict[int, dict[str, Any]] = {}
+            all_entities = {}
 
-            while page <= 20:
+            while page <= 20:  # Reasonable limit to avoid infinite loops
                 batch = self.service.client.entities(page=page, limit=100)
                 if not batch:
                     break
+
                 for entity_data in batch:
-                    eid = entity_data.get("id")
-                    if eid:
-                        all_entities[eid] = entity_data
+                    entity_id = entity_data.get("id")
+                    if entity_id:
+                        all_entities[entity_id] = entity_data
+
                 if len(batch) < 100:
                     break
                 page += 1
 
+            # Check each requested entity
             for entity_id in entity_ids:
                 if entity_id in all_entities:
-                    updated_at = all_entities[entity_id].get("updated_at")
+                    entity_data = all_entities[entity_id]
+                    updated_at = entity_data.get("updated_at")
+
                     if updated_at and updated_at > last_synced:
                         modified_entity_ids.append(entity_id)
                 else:
+                    # Entity not found - might be deleted
                     deleted_entity_ids.append(entity_id)
+
+            # Get current timestamp
+            check_timestamp = datetime.now(timezone.utc).isoformat()
 
             return {
                 "modified_entity_ids": modified_entity_ids,
                 "deleted_entity_ids": deleted_entity_ids,
-                "check_timestamp": datetime.now(timezone.utc).isoformat(),
+                "check_timestamp": check_timestamp,
             }
 
         except Exception as e:
             logger.error(f"Check entity updates failed: {e}")
             raise
+
+    _MIGRATION_ALLOWED_OPS = frozenset(
+        {
+            "update_map_marker",
+            "delete_entity",
+            "update_entity",
+            "remove_entity_tags_by_tag_id",
+            "sleep_ms",
+        }
+    )
+
+    async def run_migration_plan(
+        self,
+        steps: list[dict[str, Any]],
+        *,
+        stop_on_error: bool = True,
+    ) -> dict[str, Any]:
+        """Run a whitelisted multi-step plan (same sequencing guarantees as a hand script).
+
+        This is not arbitrary code execution: only known operations are allowed.
+        Use this for repeatable region/tag migrations, marker repoints, and ordered deletes.
+
+        Step shapes::
+
+            {"op": "update_map_marker", "map_id": int, "marker_id": int, "fields": {...}}
+            {"op": "delete_entity", "entity_id": int}
+            {"op": "update_entity", "entity_id": int, "fields": {"location_id": ..., "name": ..., ...}}
+            {"op": "remove_entity_tags_by_tag_id", "entity_id": int, "tag_id": int}
+            {"op": "sleep_ms", "ms": int}
+
+        ``update_map_marker`` ``fields`` are passed to :meth:`KankaService.update_map_marker`
+        (including ``entity_id: null`` to clear links; name is merged automatically).
+        """
+        results: list[dict[str, Any]] = []
+
+        for i, step in enumerate(steps):
+            if not isinstance(step, dict):
+                err = {
+                    "step": i,
+                    "op": None,
+                    "success": False,
+                    "error": "step must be an object",
+                }
+                results.append(err)
+                if stop_on_error:
+                    return {
+                        "success": False,
+                        "stopped_at": i,
+                        "results": results,
+                    }
+                continue
+
+            op = str(step.get("op", "")).strip().lower()
+            if op not in self._MIGRATION_ALLOWED_OPS:
+                err = {
+                    "step": i,
+                    "op": op or None,
+                    "success": False,
+                    "error": f"unknown or disallowed op (allowed: {sorted(self._MIGRATION_ALLOWED_OPS)})",
+                }
+                results.append(err)
+                if stop_on_error:
+                    return {
+                        "success": False,
+                        "stopped_at": i,
+                        "results": results,
+                    }
+                continue
+
+            try:
+                if op == "sleep_ms":
+                    ms = int(step.get("ms", step.get("sleep_ms", 0)))
+                    if ms > 0:
+                        await asyncio.sleep(ms / 1000.0)
+                    results.append({"step": i, "op": op, "success": True})
+                elif op == "update_map_marker":
+                    map_id = int(step["map_id"])
+                    marker_id = int(step["marker_id"])
+                    fields = step.get("fields")
+                    if not isinstance(fields, dict):
+                        raise ValueError("`fields` must be an object for update_map_marker")
+                    data = self.service.update_map_marker(map_id, marker_id, fields)
+                    results.append(
+                        {"step": i, "op": op, "success": True, "data": data}
+                    )
+                elif op == "delete_entity":
+                    entity_id = int(step["entity_id"])
+                    ok = self.service.delete_entity(entity_id)
+                    results.append(
+                        {"step": i, "op": op, "success": ok, "entity_id": entity_id}
+                    )
+                elif op == "update_entity":
+                    entity_id = int(step["entity_id"])
+                    fields = step.get("fields")
+                    if not isinstance(fields, dict):
+                        raise ValueError("`fields` must be an object for update_entity")
+                    ok = self.service.update_entity(
+                        entity_id,
+                        name=fields.get("name"),
+                        type=fields.get("type"),
+                        entry=fields.get("entry"),
+                        tags=fields.get("tags"),
+                        is_hidden=fields.get("is_hidden"),
+                        location_id=fields.get("location_id"),
+                        is_completed=fields.get("is_completed"),
+                        image_uuid=fields.get("image_uuid"),
+                        header_uuid=fields.get("header_uuid"),
+                    )
+                    results.append(
+                        {
+                            "step": i,
+                            "op": op,
+                            "success": ok,
+                            "entity_id": entity_id,
+                        }
+                    )
+                elif op == "remove_entity_tags_by_tag_id":
+                    entity_id = int(step["entity_id"])
+                    tag_id = int(step["tag_id"])
+                    resp = self.service.list_entity_tags(entity_id)
+                    rows = (
+                        resp.get("data")
+                        if isinstance(resp.get("data"), list)
+                        else []
+                    )
+                    removed: list[int] = []
+                    for row in rows:
+                        if row.get("tag_id") == tag_id and row.get("id"):
+                            self.service.remove_entity_tag(
+                                entity_id, int(row["id"])
+                            )
+                            removed.append(int(row["id"]))
+                    results.append(
+                        {
+                            "step": i,
+                            "op": op,
+                            "success": True,
+                            "removed_entity_tag_ids": removed,
+                        }
+                    )
+            except Exception as e:
+                logger.error("Migration step %s (%s) failed: %s", i, op, e)
+                results.append(
+                    {"step": i, "op": op, "success": False, "error": str(e)}
+                )
+                if stop_on_error:
+                    return {
+                        "success": False,
+                        "stopped_at": i,
+                        "results": results,
+                    }
+
+        return {"success": True, "stopped_at": None, "results": results}
 
 
 # Global instance management
@@ -2145,7 +1514,11 @@ _operations: KankaOperations | None = None
 
 
 def get_operations() -> KankaOperations:
-    """Get or create the singleton operations instance."""
+    """Get or create the singleton operations instance.
+
+    Returns:
+        The global KankaOperations instance
+    """
     global _operations
     if _operations is None:
         _operations = KankaOperations(service=get_service())
@@ -2153,5 +1526,15 @@ def get_operations() -> KankaOperations:
 
 
 def create_operations(service: KankaService | None = None) -> KankaOperations:
-    """Create a new operations instance for external use."""
+    """Create a new operations instance for external use.
+
+    This is useful for scripts that want to manage their own instances
+    or provide a custom service configuration.
+
+    Args:
+        service: Optional KankaService instance
+
+    Returns:
+        A new KankaOperations instance
+    """
     return KankaOperations(service)

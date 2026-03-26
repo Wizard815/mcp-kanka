@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from mcp.server import Server
 from pydantic import AnyUrl
 
-from .resources import get_kanka_api_reference, get_kanka_context
+from .resources import get_kanka_context
 from .tools import (
     handle_check_entity_updates,
     handle_create_entities,
@@ -26,14 +26,19 @@ from .tools import (
     handle_find_entities,
     handle_get_entities,
     handle_manage_attributes,
-    handle_manage_calendar_reminders,
-    handle_manage_map_groups,
-    handle_manage_map_layers,
+    handle_manage_entity_tags,
     handle_manage_map_markers,
-    handle_manage_organisation_members,
+    handle_run_migration_plan,
+    handle_manage_inventory,
     handle_manage_relations,
     handle_manage_timeline_elements,
-    handle_manage_timeline_eras,
+    handle_search_entities,
+    handle_manage_permissions,
+    handle_manage_entity_image,
+    handle_manage_calendar_weather,
+    handle_get_archives,
+    handle_calendar_advance_date,
+    handle_calendar_retreat_date,
     handle_update_entities,
     handle_update_posts,
 )
@@ -51,25 +56,6 @@ logger = logging.getLogger(__name__)
 # Create the MCP server instance
 app: Server[None] = Server("mcp-kanka")
 
-# All supported entity types for schema reuse
-_ENTITY_TYPE_ENUM = [
-    "calendar",
-    "character",
-    "creature",
-    "event",
-    "family",
-    "item",
-    "location",
-    "map",
-    "organization",
-    "race",
-    "note",
-    "journal",
-    "quest",
-    "tag",
-    "timeline",
-]
-
 
 @app.list_resources()  # type: ignore[no-untyped-call, misc]
 async def list_resources() -> list[types.Resource]:
@@ -80,13 +66,7 @@ async def list_resources() -> list[types.Resource]:
             name="Kanka Context",
             description="Information about Kanka's structure and this MCP server's capabilities",
             mimeType="application/json",
-        ),
-        types.Resource(
-            uri=AnyUrl("kanka://api-reference"),
-            name="Kanka API Reference",
-            description="Kanka REST API endpoints, parameters, and formats (from app.kanka.io/api-docs/1.0)",
-            mimeType="text/markdown",
-        ),
+        )
     ]
 
 
@@ -95,8 +75,6 @@ async def read_resource(uri: str) -> str:
     """Read a resource by URI."""
     if uri == "kanka://context":
         return get_kanka_context()
-    if uri == "kanka://api-reference":
-        return get_kanka_api_reference()
     raise ValueError(f"Unknown resource: {uri}")
 
 
@@ -116,12 +94,26 @@ async def list_tools() -> list[types.Tool]:
                     },
                     "entity_type": {
                         "type": "string",
-                        "enum": _ENTITY_TYPE_ENUM,
+                        "enum": [
+                            "ability",
+                            "character",
+                            "conversation",
+                            "creature",
+                            "dice_roll",
+                            "location",
+                            "organization",
+                            "race",
+                            "note",
+                            "journal",
+                            "bookmark",
+                            "quest",
+                            "attribute",
+                        ],
                         "description": "Entity type to filter by",
                     },
                     "name": {
                         "type": "string",
-                        "description": "Filter by name (partial match by default)",
+                        "description": "Filter by name (partial match by default, e.g. 'Test' matches 'Test Character')",
                     },
                     "name_exact": {
                         "type": "boolean",
@@ -140,7 +132,12 @@ async def list_tools() -> list[types.Tool]:
                     "tags": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Filter by tags (matches entities having ALL specified tags)",
+                        "description": "Filter by tag names (resolved to tag IDs for API-side filtering; requires ALL specified tags)",
+                    },
+                    "tag_id": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Filter by tag IDs (requires ALL specified tags)",
                     },
                     "date_range": {
                         "type": "object",
@@ -173,6 +170,25 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="search_entities",
+            description="Global search across all entity types",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "search_term": {
+                        "type": "string",
+                        "description": "Search term (global search endpoint)",
+                    },
+                    "page": {
+                        "type": "integer",
+                        "description": "Search pagination page number",
+                        "default": 1,
+                    },
+                },
+                "required": ["search_term"],
+            },
+        ),
+        types.Tool(
             name="create_entities",
             description="Create one or more entities",
             inputSchema={
@@ -185,7 +201,21 @@ async def list_tools() -> list[types.Tool]:
                             "properties": {
                                 "entity_type": {
                                     "type": "string",
-                                    "enum": _ENTITY_TYPE_ENUM,
+                                    "enum": [
+                                        "ability",
+                                        "character",
+                                        "conversation",
+                                        "creature",
+                                        "location",
+                                        "dice_roll",
+                                        "organization",
+                                        "race",
+                                        "note",
+                                        "journal",
+                                        "bookmark",
+                                        "quest",
+                                        "attribute",
+                                    ],
                                     "description": "Entity type",
                                 },
                                 "name": {
@@ -194,127 +224,20 @@ async def list_tools() -> list[types.Tool]:
                                 },
                                 "type": {
                                     "type": "string",
-                                    "description": "The Type field (e.g., 'NPC', 'City')",
+                                    "description": "The Type field (e.g., 'NPC', 'Player Character')",
                                 },
                                 "entry": {
                                     "type": "string",
-                                    "description": "Description in Markdown format",
+                                    "description": "Description (Markdown accepted; auto-converted to HTML for API)",
+                                },
+                                "location_id": {
+                                    "type": "integer",
+                                    "description": "Location parent child_id (locations/{location.id}). Use the Location module `id` field (NOT entity_id). (locations create only)",
                                 },
                                 "tags": {"type": "array", "items": {"type": "string"}},
                                 "is_hidden": {
                                     "type": "boolean",
                                     "description": "If true, hidden from players (admin-only)",
-                                },
-                                "parent_id": {
-                                    "type": "integer",
-                                    "description": "Parent entity ID for nesting (same entity type)",
-                                },
-                                "location_id": {
-                                    "type": "integer",
-                                    "description": "Location entity ID (characters, orgs, families, items, creatures)",
-                                },
-                                "title": {
-                                    "type": "string",
-                                    "description": "Character title (characters only)",
-                                },
-                                "age": {
-                                    "type": "string",
-                                    "description": "Character age (characters only)",
-                                },
-                                "sex": {
-                                    "type": "string",
-                                    "description": "Character sex/gender (characters only)",
-                                },
-                                "pronouns": {
-                                    "type": "string",
-                                    "description": "Character pronouns (characters only)",
-                                },
-                                "is_dead": {
-                                    "type": "boolean",
-                                    "description": "Whether character is dead (characters only)",
-                                },
-                                "races": {
-                                    "type": "array",
-                                    "items": {"type": "integer"},
-                                    "description": "Array of race IDs (characters only)",
-                                },
-                                "families": {
-                                    "type": "array",
-                                    "items": {"type": "integer"},
-                                    "description": "Array of family IDs (characters only)",
-                                },
-                                "is_completed": {
-                                    "type": "boolean",
-                                    "description": "Whether quest is completed (quests only)",
-                                },
-                                "date": {
-                                    "type": "string",
-                                    "description": "Session date (journals only)",
-                                },
-                                "character_id": {
-                                    "type": "integer",
-                                    "description": "Author/character entity ID (journals, quests)",
-                                },
-                                "is_extinct": {
-                                    "type": "boolean",
-                                    "description": "Whether family is extinct (families only)",
-                                },
-                                "is_defunct": {
-                                    "type": "boolean",
-                                    "description": "Whether org is defunct (organisations only)",
-                                },
-                                "creator_id": {
-                                    "type": "integer",
-                                    "description": "Creator entity ID (items only)",
-                                },
-                                "price": {
-                                    "type": "string",
-                                    "description": "Item price (items only)",
-                                },
-                                "size": {
-                                    "type": "string",
-                                    "description": "Item size (items only)",
-                                },
-                                "weight": {
-                                    "type": "string",
-                                    "description": "Item weight (items only)",
-                                },
-                                "colour": {
-                                    "type": "string",
-                                    "description": "Hex colour (tags only)",
-                                },
-                                "image_uuid": {
-                                    "type": "string",
-                                    "description": "Gallery image UUID",
-                                },
-                                "header_uuid": {
-                                    "type": "string",
-                                    "description": "Gallery header image UUID",
-                                },
-                                "reminder": {
-                                    "type": "object",
-                                    "description": "Create a reminder on entity with type birth/death (characters) or founded (locations/orgs/families) for age calc. See https://docs.kanka.io/en/latest/advanced/age.html",
-                                    "properties": {
-                                        "calendar_id": {
-                                            "type": "integer",
-                                            "description": "Calendar entity_id",
-                                        },
-                                        "year": {"type": "integer"},
-                                        "month": {"type": "integer"},
-                                        "day": {"type": "integer"},
-                                        "type": {
-                                            "type": "string",
-                                            "enum": ["birth", "death", "founded"],
-                                            "description": "birth/death for characters; founded for locations, organisations, families",
-                                        },
-                                    },
-                                    "required": [
-                                        "calendar_id",
-                                        "year",
-                                        "month",
-                                        "day",
-                                        "type",
-                                    ],
                                 },
                             },
                             "required": ["entity_type", "name"],
@@ -341,7 +264,7 @@ async def list_tools() -> list[types.Tool]:
                                 },
                                 "name": {
                                     "type": "string",
-                                    "description": "Entity name (required by Kanka API even if unchanged)",
+                                    "description": "Entity name (optional for PATCH; if omitted and API requires it, MCP will retry with current name)",
                                 },
                                 "type": {
                                     "type": "string",
@@ -349,128 +272,16 @@ async def list_tools() -> list[types.Tool]:
                                 },
                                 "entry": {
                                     "type": "string",
-                                    "description": "Content in Markdown format",
-                                },
-                                "tags": {"type": "array", "items": {"type": "string"}},
-                                "is_hidden": {"type": "boolean"},
-                                "parent_id": {
-                                    "type": "integer",
-                                    "description": "Parent entity ID for nesting (same entity type)",
+                                    "description": "Content (Markdown accepted; auto-converted to HTML for API)",
                                 },
                                 "location_id": {
                                     "type": "integer",
-                                    "description": "Location entity ID",
+                                    "description": "Location parent child_id (locations/{location.id}). Use the Location module `id` field (NOT entity_id). (locations update only)",
                                 },
-                                "title": {
-                                    "type": "string",
-                                    "description": "Character title",
-                                },
-                                "age": {
-                                    "type": "string",
-                                    "description": "Character age",
-                                },
-                                "sex": {
-                                    "type": "string",
-                                    "description": "Character sex/gender",
-                                },
-                                "pronouns": {
-                                    "type": "string",
-                                    "description": "Character pronouns",
-                                },
-                                "is_dead": {
-                                    "type": "boolean",
-                                    "description": "Whether character is dead",
-                                },
-                                "races": {
-                                    "type": "array",
-                                    "items": {"type": "integer"},
-                                    "description": "Array of race IDs",
-                                },
-                                "families": {
-                                    "type": "array",
-                                    "items": {"type": "integer"},
-                                    "description": "Array of family IDs",
-                                },
-                                "is_completed": {
-                                    "type": "boolean",
-                                    "description": "Whether quest is completed",
-                                },
-                                "date": {
-                                    "type": "string",
-                                    "description": "Session date (journals)",
-                                },
-                                "character_id": {
-                                    "type": "integer",
-                                    "description": "Author/character entity ID",
-                                },
-                                "is_extinct": {
-                                    "type": "boolean",
-                                    "description": "Whether family is extinct",
-                                },
-                                "is_defunct": {
-                                    "type": "boolean",
-                                    "description": "Whether org is defunct",
-                                },
-                                "creator_id": {
-                                    "type": "integer",
-                                    "description": "Creator entity ID (items)",
-                                },
-                                "price": {
-                                    "type": "string",
-                                    "description": "Item price",
-                                },
-                                "size": {"type": "string", "description": "Item size"},
-                                "weight": {
-                                    "type": "string",
-                                    "description": "Item weight",
-                                },
-                                "colour": {
-                                    "type": "string",
-                                    "description": "Hex colour (tags)",
-                                },
-                                "image_uuid": {
-                                    "type": "string",
-                                    "description": "Gallery image UUID",
-                                },
-                                "header_uuid": {
-                                    "type": "string",
-                                    "description": "Gallery header image UUID",
-                                },
-                                "weekdays": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "description": "Calendar: weekday names (min 2)",
-                                },
-                                "months": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "name": {"type": "string"},
-                                            "length": {"type": "integer"},
-                                            "type": {"type": "string"},
-                                        },
-                                    },
-                                    "description": "Calendar: months as [{name, length, type}]",
-                                },
-                                "current_year": {
-                                    "type": "integer",
-                                    "description": "Calendar: current year",
-                                },
-                                "current_month": {
-                                    "type": "integer",
-                                    "description": "Calendar: current month",
-                                },
-                                "current_day": {
-                                    "type": "integer",
-                                    "description": "Calendar: current day",
-                                },
-                                "suffix": {
-                                    "type": "string",
-                                    "description": "Calendar: year suffix (e.g. A.E., BC)",
-                                },
+                                "tags": {"type": "array", "items": {"type": "string"}},
+                                "is_hidden": {"type": "boolean"},
                             },
-                            "required": ["entity_id", "name"],
+                            "required": ["entity_id"],
                         },
                     }
                 },
@@ -530,7 +341,7 @@ async def list_tools() -> list[types.Tool]:
                                 "name": {"type": "string", "description": "Post title"},
                                 "entry": {
                                     "type": "string",
-                                    "description": "Post content in Markdown format",
+                                    "description": "Post content (Markdown accepted; auto-converted to HTML for API)",
                                 },
                                 "is_hidden": {
                                     "type": "boolean",
@@ -565,18 +376,18 @@ async def list_tools() -> list[types.Tool]:
                                 },
                                 "name": {
                                     "type": "string",
-                                    "description": "Post title (required by API even if unchanged)",
+                                    "description": "Post title (optional for PATCH; if omitted and API requires it, MCP will retry with current title)",
                                 },
                                 "entry": {
                                     "type": "string",
-                                    "description": "Post content in Markdown format",
+                                    "description": "Post content (Markdown accepted; auto-converted to HTML for API)",
                                 },
                                 "is_hidden": {
                                     "type": "boolean",
                                     "description": "If true, hidden from players (admin-only)",
                                 },
                             },
-                            "required": ["entity_id", "post_id", "name"],
+                            "required": ["entity_id", "post_id"],
                         },
                     }
                 },
@@ -611,6 +422,627 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="manage_map_markers",
+            description=(
+                "Manage map markers for a specific map (list/create/update/delete) via action-based payloads. "
+                "Updates use KankaService.update_map_marker: clearing entity_id (null) auto-fills name from the "
+                "current marker so the API does not return 422."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "create", "update", "delete"],
+                        "description": "Which operation to perform",
+                    },
+                    "map_id": {
+                        "type": "integer",
+                        "description": "The map's child id (the `id` field from map response, NOT entity_id). Used by list/create/update/delete.",
+                    },
+                    "marker_id": {
+                        "type": "integer",
+                        "description": "Map marker child id. Required for update/delete only.",
+                    },
+                    "page": {
+                        "type": "integer",
+                        "description": "Pagination page (list only)",
+                        "default": 1,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Pagination limit (list only)",
+                        "default": 30,
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Map marker name (create/update only; required when `entity_id` is omitted).",
+                    },
+                    "entity_id": {
+                        "anyOf": [
+                            {"type": "integer"},
+                            {"type": "null"},
+                        ],
+                        "description": "Linked entity id (create/update). Use null to clear the link; the server still requires a marker name — the MCP merges the existing name automatically when you omit it.",
+                    },
+                    "latitude": {
+                        "type": "number",
+                        "description": "Marker latitude (create/update only; required for create).",
+                    },
+                    "longitude": {
+                        "type": "number",
+                        "description": "Marker longitude (create/update only; required for create).",
+                    },
+                    "shape_id": {
+                        "type": "integer",
+                        "description": "Marker shape id (create/update only; required for create).",
+                    },
+                    "icon": {
+                        "type": "integer",
+                        "description": "Marker icon id (create/update only; required for create).",
+                    },
+                    "group_id": {
+                        "type": "integer",
+                        "description": "Marker group id (create/update only).",
+                    },
+                    "is_draggable": {
+                        "type": "boolean",
+                        "description": "Whether marker is draggable (create/update only).",
+                    },
+                    "is_popupless": {
+                        "type": "boolean",
+                        "description": "Disable marker tooltip popping on hover (create/update only).",
+                    },
+                    "custom_shape": {
+                        "type": "string",
+                        "description": "Polygon coordinates (create/update only).",
+                    },
+                    "custom_icon": {
+                        "type": "string",
+                        "description": "HTML string for custom icon (create/update only).",
+                    },
+                    "size_id": {
+                        "type": "integer",
+                        "description": "Circle size id 1-6 (create/update only).",
+                    },
+                    "opacity": {
+                        "type": "integer",
+                        "description": "Opacity 0-100 (create/update only).",
+                    },
+                    "visibility_id": {
+                        "type": "integer",
+                        "description": "Visibility id (1=all, 2=self, 3=admin, 4=self-admin, 5=members) (create/update only).",
+                    },
+                    "colour": {
+                        "type": "string",
+                        "description": "Hex color with leading # (create/update only).",
+                    },
+                    "font_colour": {
+                        "type": "string",
+                        "description": "Hex color with leading # (create/update only).",
+                    },
+                    "circle_radius": {
+                        "description": "Custom circle radius when size_id=6 (circle shape) (create/update only).",
+                        "anyOf": [{"type": "integer"}, {"type": "null"}],
+                    },
+                    "polygon_style": {
+                        "type": "array",
+                        "description": "Polygon rendering options (stroke, stroke-width, stroke-opacity) (create/update only).",
+                    },
+                    "css": {
+                        "type": "string",
+                        "description": "Custom CSS class (create/update only).",
+                    },
+                },
+                "required": ["action", "map_id"],
+            },
+        ),
+        types.Tool(
+            name="manage_relations",
+            description="Manage relations attached to an entity (list/create/update/delete) via action-based payloads",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "create", "update", "delete"],
+                        "description": "Which operation to perform",
+                    },
+                    "entity_id": {
+                        "type": "integer",
+                        "description": "The owner entity id (the `entities/{entity.id}` path parameter). Used by list/create/update/delete.",
+                    },
+                    "relation_id": {
+                        "type": "integer",
+                        "description": "Relation id (child id). Required for update/delete only.",
+                    },
+                    "page": {
+                        "type": "integer",
+                        "description": "Pagination page (list only)",
+                        "default": 1,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Pagination limit (list only)",
+                        "default": 30,
+                    },
+                    "relation": {
+                        "type": "string",
+                        "description": "Relation description (create/update only; required by API on create).",
+                    },
+                    "owner_id": {
+                        "type": "integer",
+                        "description": "Relation owner entity id (create/update only; required by API on create). Defaults to `entity_id` if omitted.",
+                    },
+                    "target_id": {
+                        "type": "integer",
+                        "description": "Target entity id (create only). Required if `targets` is not provided.",
+                    },
+                    "targets": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Target entity ids (create only). Required if `target_id` is not provided.",
+                    },
+                    "attitude": {
+                        "type": "integer",
+                        "description": "Attitude/range from -100 to 100 (create/update only).",
+                    },
+                    "colour": {
+                        "type": "string",
+                        "description": "Hex colour of the attitude (create/update only; with or without #).",
+                    },
+                    "two_way": {
+                        "type": "boolean",
+                        "description": "If set, duplicate relation in the other direction (create/update only).",
+                    },
+                    "is_pinned": {
+                        "type": "boolean",
+                        "description": "If relation is visible on the entity submenu (create/update only).",
+                    },
+                    "visibility_id": {
+                        "type": "integer",
+                        "description": "Visibility id (1=all, 2=self, 3=admin, 4=self-admin, 5=members) (create/update only).",
+                    },
+                },
+                "required": ["action", "entity_id"],
+            },
+        ),
+        types.Tool(
+            name="manage_timeline_elements",
+            description="Manage timeline elements for a timeline (list/create/update/delete) via action-based payloads",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "create", "update", "delete"],
+                        "description": "Which operation to perform",
+                    },
+                    "timeline_id": {
+                        "type": "integer",
+                        "description": "Timeline child id (used in `timelines/{timeline.id}` path) for list/create/update/delete.",
+                    },
+                    "element_id": {
+                        "type": "integer",
+                        "description": "Timeline element child id. Required for update/delete only.",
+                    },
+                    "page": {
+                        "type": "integer",
+                        "description": "Pagination page (list only)",
+                        "default": 1,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Pagination limit (list only)",
+                        "default": 15,
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Timeline element name (create/update only; required when `entity_id` is omitted).",
+                    },
+                    "entity_id": {
+                        "type": "integer",
+                        "description": "Linked entity id (create/update only; required when `name` is omitted).",
+                    },
+                    "era_id": {
+                        "type": "integer",
+                        "description": "Timeline Era id (create/update only; required for create).",
+                    },
+                    "entry": {
+                        "type": "string",
+                        "description": "Timeline element entry (Markdown accepted; auto-converted to HTML for API) (create/update only).",
+                    },
+                    "date": {
+                        "type": "string",
+                        "description": "Date string for the element (create/update only).",
+                    },
+                    "colour": {
+                        "type": "string",
+                        "description": "Colour string for the element (create/update only).",
+                    },
+                    "position": {
+                        "type": "integer",
+                        "description": "Position for ordering within the era (create/update only).",
+                    },
+                    "visibility_id": {
+                        "type": "integer",
+                        "description": "Visibility id (create/update only; 1=all, 2=self, 3=admin, 4=self-admin, 5=members).",
+                    },
+                },
+                "required": ["action", "timeline_id"],
+            },
+        ),
+        types.Tool(
+            name="manage_attributes",
+            description="Manage entity properties/attributes (list/create/update/delete) via action-based payloads",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "create", "update", "delete"],
+                        "description": "Which operation to perform",
+                    },
+                    "entity_id": {
+                        "type": "integer",
+                        "description": "Entity id (used for list/create/update/delete).",
+                    },
+                    "attribute_id": {
+                        "type": "integer",
+                        "description": "Attribute/property id (update/delete only).",
+                    },
+                    "page": {
+                        "type": "integer",
+                        "description": "Pagination page (list only)",
+                        "default": 1,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Pagination limit (list only)",
+                        "default": 30,
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Property name (create/update only; required by API on create and update).",
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "Property value (create/update only).",
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": ["text", "number", "checkbox", "section"],
+                        "description": "Property type (create/update only).",
+                    },
+                    "is_private": {
+                        "type": "boolean",
+                        "description": "If true, property is only visible to admin members (create/update only).",
+                    },
+                    "is_star": {
+                        "type": "boolean",
+                        "description": "If true, property is pinned/starred (create/update only).",
+                    },
+                    "position": {
+                        "type": "integer",
+                        "description": "Property ordering position (create/update only).",
+                    },
+                    "api_key": {
+                        "type": "string",
+                        "description": "Optional API-only key field for the property (create/update only).",
+                    },
+                },
+                "required": ["action", "entity_id"],
+            },
+        ),
+        types.Tool(
+            name="manage_entity_tags",
+            description="Manage entity tags (list/add/remove) via action-based payloads",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "add", "remove"],
+                        "description": "Which operation to perform",
+                    },
+                    "entity_id": {
+                        "type": "integer",
+                        "description": "Entity id (used for list/add/remove).",
+                    },
+                    "tag_id": {
+                        "type": "integer",
+                        "description": "Tag id (add only; remove only when `entity_tag_id` is omitted).",
+                    },
+                    "entity_tag_id": {
+                        "type": "integer",
+                        "description": "Entity-tag id (remove only).",
+                    },
+                },
+                "required": ["action", "entity_id"],
+            },
+        ),
+        types.Tool(
+            name="manage_inventory",
+            description="Manage entity inventory (list/create/update/delete) via action-based payloads",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "create", "update", "delete"],
+                        "description": "Which operation to perform",
+                    },
+                    "entity_id": {
+                        "type": "integer",
+                        "description": "Entity id (used for list/create/update/delete).",
+                    },
+                    "inventory_id": {
+                        "type": "integer",
+                        "description": "Inventory item id (update/delete only).",
+                    },
+                    "page": {
+                        "type": "integer",
+                        "description": "Pagination page (list only)",
+                        "default": 1,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Pagination limit (list only)",
+                        "default": 30,
+                    },
+                    "item_id": {
+                        "type": "integer",
+                        "description": "Inventory object id (create/update only; required without `name`).",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Inventory object name (create/update only; required without `item_id`).",
+                    },
+                    "amount": {
+                        "type": "string",
+                        "description": "Amount in inventory (create/update only; required).",
+                    },
+                    "position": {
+                        "type": "string",
+                        "description": "Where the object is stored (create/update only).",
+                    },
+                    "is_equipped": {
+                        "type": "boolean",
+                        "description": "If set, the object is equipped (create/update only).",
+                    },
+                    "visibility_id": {
+                        "type": "integer",
+                        "description": "Visibility id (1=all, 2=self, 3=admin, 4=self-admin, 5=members) (create/update only).",
+                    },
+                    "visibility": {
+                        "type": "string",
+                        "description": "Visibility string (create/update only; alternative to visibility_id).",
+                    },
+                    "currency_id": {
+                        "type": "integer",
+                        "description": "Optional currency id (create/update only).",
+                    },
+                },
+                "required": ["action", "entity_id"],
+            },
+        ),
+        types.Tool(
+            name="manage_permissions",
+            description="Manage per-entity permissions (list/update) via action-based payloads",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "update"],
+                        "description": "Which operation to perform",
+                    },
+                    "entity_id": {
+                        "type": "integer",
+                        "description": "Entity id (used for list/update).",
+                    },
+                    "permission_action": {
+                        "type": "integer",
+                        "description": "Permission controller action code (update only).",
+                    },
+                    "access": {
+                        "type": "boolean",
+                        "description": "Whether the permission is allowed (update only).",
+                    },
+                    "campaign_role_id": {
+                        "type": "integer",
+                        "description": "Campaign role id affected by this permission (update only; required if `user_id` omitted).",
+                    },
+                    "user_id": {
+                        "type": "integer",
+                        "description": "User id affected by this permission (update only; required if `campaign_role_id` omitted).",
+                    },
+                },
+                "required": ["action", "entity_id"],
+            },
+        ),
+        types.Tool(
+            name="get_archives",
+            description="Retrieve archived entities",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        ),
+        types.Tool(
+            name="manage_entity_image",
+            description="Manage an entity image (list/upload/remove) via action-based payloads",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "upload", "remove"],
+                        "description": "Which operation to perform",
+                    },
+                    "entity_id": {
+                        "type": "integer",
+                        "description": "Entity id (used for list/upload/remove).",
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Local file path to upload (upload only; required for upload).",
+                    },
+                    "is_header": {
+                        "type": "boolean",
+                        "description": "If true, upload/remove the header image instead of the main image (upload/remove only).",
+                    },
+                },
+                "required": ["action", "entity_id"],
+            },
+        ),
+        types.Tool(
+            name="manage_calendar_weather",
+            description="Manage calendar weather effects (list/create/update/delete) via action-based payloads",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "create", "update", "delete"],
+                        "description": "Which operation to perform",
+                    },
+                    "calendar_id": {
+                        "type": "integer",
+                        "description": "Calendar child id (used in `calendars/{calendar.id}/...`).",
+                    },
+                    "calendar_weather_id": {
+                        "type": "integer",
+                        "description": "Weather id (update/delete only).",
+                    },
+                    "page": {
+                        "type": "integer",
+                        "description": "Pagination page (list only)",
+                        "default": 1,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Pagination limit (list only)",
+                        "default": 15,
+                    },
+                    "year": {
+                        "type": "integer",
+                        "description": "Weather year (create/update only; required for create).",
+                    },
+                    "month": {
+                        "type": "integer",
+                        "description": "Weather month (create/update only; required for create).",
+                    },
+                    "day": {
+                        "type": "integer",
+                        "description": "Weather day (create/update only; required for create).",
+                    },
+                    "weather": {
+                        "type": "string",
+                        "description": "Weather type (create/update only; required for create).",
+                    },
+                    "temperature": {
+                        "type": "string",
+                        "description": "Temperature (create/update only).",
+                    },
+                    "precipitation": {
+                        "type": "string",
+                        "description": "Precipitation (create/update only).",
+                    },
+                    "wind": {
+                        "type": "string",
+                        "description": "Wind (create/update only).",
+                    },
+                    "effect": {
+                        "type": "string",
+                        "description": "Effect (create/update only).",
+                    },
+                    "visibility_id": {
+                        "type": "integer",
+                        "description": "Visibility id (create/update only).",
+                    },
+                },
+                "required": ["action", "calendar_id"],
+            },
+        ),
+        types.Tool(
+            name="calendar_advance_date",
+            description="Advance a calendar date by one day",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "calendar_id": {
+                        "type": "integer",
+                        "description": "Calendar child id.",
+                    }
+                },
+                "required": ["calendar_id"],
+            },
+        ),
+        types.Tool(
+            name="calendar_retreat_date",
+            description="Retreat a calendar date by one day",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "calendar_id": {
+                        "type": "integer",
+                        "description": "Calendar child id.",
+                    }
+                },
+                "required": ["calendar_id"],
+            },
+        ),
+        types.Tool(
+            name="run_migration_plan",
+            description=(
+                "Run a whitelisted multi-step migration (JSON steps, not arbitrary Python). "
+                "Same sequencing as a hand-written script: map marker updates (with safe entity_id clears), "
+                "entity updates, tag removals, entity deletes, optional sleeps. "
+                "Each step: {\"op\": ...}. Ops: update_map_marker (map_id, marker_id, fields), "
+                "update_entity (entity_id, fields), remove_entity_tags_by_tag_id (entity_id, tag_id), "
+                "delete_entity (entity_id), sleep_ms (ms)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "steps": {
+                        "type": "array",
+                        "description": "Ordered steps; each object must include \"op\".",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "op": {
+                                    "type": "string",
+                                    "enum": [
+                                        "update_map_marker",
+                                        "delete_entity",
+                                        "update_entity",
+                                        "remove_entity_tags_by_tag_id",
+                                        "sleep_ms",
+                                    ],
+                                },
+                                "map_id": {"type": "integer"},
+                                "marker_id": {"type": "integer"},
+                                "fields": {"type": "object"},
+                                "entity_id": {"type": "integer"},
+                                "tag_id": {"type": "integer"},
+                                "ms": {"type": "integer"},
+                            },
+                            "required": ["op"],
+                        },
+                    },
+                    "stop_on_error": {
+                        "type": "boolean",
+                        "description": "If true (default), stop at the first failed step.",
+                        "default": True,
+                    },
+                },
+                "required": ["steps"],
+            },
+        ),
+        types.Tool(
             name="check_entity_updates",
             description="Check which entity_ids have been modified since last sync",
             inputSchema={
@@ -629,474 +1061,6 @@ async def list_tools() -> list[types.Tool]:
                 "required": ["entity_ids", "last_synced"],
             },
         ),
-        # --- Sub-resource tools ---
-        types.Tool(
-            name="manage_relations",
-            description="Create, update, delete, or list relations (connections) between entities",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "actions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "action": {
-                                    "type": "string",
-                                    "enum": ["create", "update", "delete", "list"],
-                                    "description": "The action to perform",
-                                },
-                                "entity_id": {
-                                    "type": "integer",
-                                    "description": "The source entity ID",
-                                },
-                                "relation_id": {
-                                    "type": "integer",
-                                    "description": "Relation ID (for update/delete)",
-                                },
-                                "target_id": {
-                                    "type": "integer",
-                                    "description": "Target entity ID (for create)",
-                                },
-                                "relation": {
-                                    "type": "string",
-                                    "description": "Relation label (e.g. 'Brother of', 'Reports to')",
-                                },
-                                "attitude": {
-                                    "type": "integer",
-                                    "description": "Attitude score (-100 to 100)",
-                                },
-                                "two_way": {
-                                    "type": "boolean",
-                                    "description": "If true, creates a mirrored relation",
-                                },
-                                "colour": {
-                                    "type": "string",
-                                    "description": "Hex colour string",
-                                },
-                                "is_pinned": {
-                                    "type": "boolean",
-                                    "description": "Pin relation on entity submenu",
-                                },
-                                "is_hidden": {
-                                    "type": "boolean",
-                                    "description": "If true, hidden from players",
-                                },
-                            },
-                            "required": ["action", "entity_id"],
-                        },
-                    }
-                },
-                "required": ["actions"],
-            },
-        ),
-        types.Tool(
-            name="manage_attributes",
-            description="Create, update, delete, list, or bulk-patch custom attributes on entities",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "actions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "action": {
-                                    "type": "string",
-                                    "enum": [
-                                        "create",
-                                        "update",
-                                        "delete",
-                                        "list",
-                                        "bulk_patch",
-                                    ],
-                                    "description": "The action to perform",
-                                },
-                                "entity_id": {
-                                    "type": "integer",
-                                    "description": "The entity ID",
-                                },
-                                "attribute_id": {
-                                    "type": "integer",
-                                    "description": "Attribute ID (for update/delete)",
-                                },
-                                "name": {
-                                    "type": "string",
-                                    "description": "Attribute name",
-                                },
-                                "value": {
-                                    "type": "string",
-                                    "description": "Attribute value",
-                                },
-                                "type_id": {
-                                    "type": "integer",
-                                    "description": "Attribute type: 1=standard, 2=multiline, 3=checkbox, 4=section, 5=random, 6=number, 7=list",
-                                },
-                                "is_pinned": {
-                                    "type": "boolean",
-                                    "description": "Pin attribute on entity view",
-                                },
-                                "is_hidden": {
-                                    "type": "boolean",
-                                    "description": "If true, hidden from players",
-                                },
-                                "api_key": {
-                                    "type": "string",
-                                    "description": "Custom API key (max 20 chars)",
-                                },
-                                "default_order": {
-                                    "type": "integer",
-                                    "description": "Display order",
-                                },
-                                "attributes": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "id": {
-                                                "type": "integer",
-                                                "description": "Existing attribute ID (for update in bulk)",
-                                            },
-                                            "name": {"type": "string"},
-                                            "value": {"type": "string"},
-                                            "type_id": {"type": "integer"},
-                                            "is_pinned": {"type": "boolean"},
-                                            "is_hidden": {"type": "boolean"},
-                                            "api_key": {"type": "string"},
-                                        },
-                                        "required": ["name"],
-                                    },
-                                    "description": "Array of attributes for bulk_patch action",
-                                },
-                            },
-                            "required": ["action", "entity_id"],
-                        },
-                    }
-                },
-                "required": ["actions"],
-            },
-        ),
-        types.Tool(
-            name="manage_organisation_members",
-            description="Add, update, remove, or list members of an organisation",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "actions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "action": {
-                                    "type": "string",
-                                    "enum": ["create", "update", "delete", "list"],
-                                    "description": "The action to perform",
-                                },
-                                "organisation_id": {
-                                    "type": "integer",
-                                    "description": "The entity_id of the organisation",
-                                },
-                                "member_id": {
-                                    "type": "integer",
-                                    "description": "Member ID (for update/delete)",
-                                },
-                                "character_id": {
-                                    "type": "integer",
-                                    "description": "Character entity ID to add as member",
-                                },
-                                "role": {
-                                    "type": "string",
-                                    "description": "Member's role in the organisation",
-                                },
-                                "is_hidden": {
-                                    "type": "boolean",
-                                    "description": "If true, hidden from players",
-                                },
-                                "status_id": {
-                                    "type": "integer",
-                                    "description": "0=active, 1=past, 2=unknown",
-                                },
-                                "parent_id": {
-                                    "type": "integer",
-                                    "description": "Parent member ID (boss)",
-                                },
-                                "pin_id": {
-                                    "type": "integer",
-                                    "description": "0=none, 1=pin to character, 2=pin to org, 3=both",
-                                },
-                            },
-                            "required": ["action", "organisation_id"],
-                        },
-                    }
-                },
-                "required": ["actions"],
-            },
-        ),
-        types.Tool(
-            name="manage_map_markers",
-            description="Create, update, delete, or list markers on a map",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "actions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "action": {
-                                    "type": "string",
-                                    "enum": ["create", "update", "delete", "list"],
-                                    "description": "The action to perform",
-                                },
-                                "map_id": {
-                                    "type": "integer",
-                                    "description": "The map's entity_id",
-                                },
-                                "marker_id": {
-                                    "type": "integer",
-                                    "description": "Marker ID (for update/delete)",
-                                },
-                                "name": {
-                                    "type": "string",
-                                    "description": "Marker name (required for create without entity_id)",
-                                },
-                                "entity_id": {
-                                    "type": "integer",
-                                    "description": "Entity to link to marker (required for create without name)",
-                                },
-                                "latitude": {"type": "number"},
-                                "longitude": {"type": "number"},
-                                "shape_id": {
-                                    "type": "integer",
-                                    "description": "1=Marker, 2=Label, 3=Circle, 4=Polygon",
-                                },
-                                "icon": {"type": "string"},
-                                "group_id": {"type": "integer"},
-                                "is_draggable": {"type": "boolean"},
-                                "is_hidden": {"type": "boolean"},
-                            },
-                            "required": ["action", "map_id"],
-                        },
-                    }
-                },
-                "required": ["actions"],
-            },
-        ),
-        types.Tool(
-            name="manage_map_groups",
-            description="Create, update, delete, or list marker groups on a map",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "actions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "action": {
-                                    "type": "string",
-                                    "enum": ["create", "update", "delete", "list"],
-                                    "description": "The action to perform",
-                                },
-                                "map_id": {
-                                    "type": "integer",
-                                    "description": "The map's entity_id",
-                                },
-                                "group_id": {
-                                    "type": "integer",
-                                    "description": "Group ID (for update/delete)",
-                                },
-                                "name": {"type": "string"},
-                                "parent_id": {"type": "integer"},
-                                "is_shown": {"type": "boolean"},
-                                "position": {"type": "integer"},
-                                "is_hidden": {"type": "boolean"},
-                            },
-                            "required": ["action", "map_id"],
-                        },
-                    }
-                },
-                "required": ["actions"],
-            },
-        ),
-        types.Tool(
-            name="manage_map_layers",
-            description="Create, update, delete, or list layers on a map",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "actions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "action": {
-                                    "type": "string",
-                                    "enum": ["create", "update", "delete", "list"],
-                                    "description": "The action to perform",
-                                },
-                                "map_id": {
-                                    "type": "integer",
-                                    "description": "The map's entity_id",
-                                },
-                                "layer_id": {
-                                    "type": "integer",
-                                    "description": "Layer ID (for update/delete)",
-                                },
-                                "name": {"type": "string"},
-                                "image_url": {"type": "string"},
-                                "entry": {"type": "string"},
-                                "type_id": {"type": "integer"},
-                                "position": {"type": "integer"},
-                                "is_hidden": {"type": "boolean"},
-                            },
-                            "required": ["action", "map_id"],
-                        },
-                    }
-                },
-                "required": ["actions"],
-            },
-        ),
-        types.Tool(
-            name="manage_calendar_reminders",
-            description="Add, update, remove, or list events on a calendar. Use event_type 'birth'/'death' for characters (age calc), 'founded' for locations/orgs/families. See https://docs.kanka.io/en/latest/advanced/age.html",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "actions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "action": {
-                                    "type": "string",
-                                    "enum": ["create", "update", "delete", "list"],
-                                    "description": "The action to perform",
-                                },
-                                "calendar_id": {
-                                    "type": "integer",
-                                    "description": "The calendar's entity_id",
-                                },
-                                "entity_id": {
-                                    "type": "integer",
-                                    "description": "Entity to place on calendar (Event, Character, etc.)",
-                                },
-                                "reminder_id": {
-                                    "type": "integer",
-                                    "description": "Reminder ID (for update/delete)",
-                                },
-                                "year": {"type": "integer"},
-                                "month": {"type": "integer"},
-                                "day": {"type": "integer"},
-                                "length": {
-                                    "type": "integer",
-                                    "description": "Duration in days (default 1)",
-                                },
-                                "name": {"type": "string"},
-                                "comment": {"type": "string"},
-                                "colour": {"type": "string"},
-                                "is_recurring": {"type": "boolean"},
-                                "recurring_periodicity": {
-                                    "type": "string",
-                                    "description": "yearly, monthly, or moon_id_f/n",
-                                },
-                                "recurring_until": {"type": "integer"},
-                                "is_hidden": {"type": "boolean"},
-                                "event_type": {
-                                    "type": "string",
-                                    "description": "For age/foundation: 'birth', 'death', or 'founded'. Characters: birth/death. Locations/Orgs/Families: founded.",
-                                },
-                            },
-                            "required": ["action", "calendar_id"],
-                        },
-                    }
-                },
-                "required": ["actions"],
-            },
-        ),
-        types.Tool(
-            name="manage_timeline_eras",
-            description="Create, update, delete, or list eras on a timeline",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "actions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "action": {
-                                    "type": "string",
-                                    "enum": ["create", "update", "delete", "list"],
-                                    "description": "The action to perform",
-                                },
-                                "timeline_id": {
-                                    "type": "integer",
-                                    "description": "The timeline's entity_id",
-                                },
-                                "era_id": {
-                                    "type": "integer",
-                                    "description": "Era ID (for update/delete)",
-                                },
-                                "name": {"type": "string"},
-                                "abbreviation": {"type": "string"},
-                                "start_year": {"type": "integer"},
-                                "end_year": {"type": "integer"},
-                                "visibility": {
-                                    "type": "string",
-                                    "description": "all, admin, or self",
-                                },
-                            },
-                            "required": ["action", "timeline_id"],
-                        },
-                    }
-                },
-                "required": ["actions"],
-            },
-        ),
-        types.Tool(
-            name="manage_timeline_elements",
-            description="Create, update, delete, or list elements on a timeline",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "actions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "action": {
-                                    "type": "string",
-                                    "enum": ["create", "update", "delete", "list"],
-                                    "description": "The action to perform",
-                                },
-                                "timeline_id": {
-                                    "type": "integer",
-                                    "description": "The timeline's entity_id",
-                                },
-                                "element_id": {
-                                    "type": "integer",
-                                    "description": "Element ID (for update/delete)",
-                                },
-                                "era_id": {
-                                    "type": "integer",
-                                    "description": "Era ID (required for create)",
-                                },
-                                "name": {"type": "string"},
-                                "entity_id": {"type": "integer"},
-                                "entry": {"type": "string"},
-                                "date": {"type": "string"},
-                                "colour": {"type": "string"},
-                                "position": {"type": "integer"},
-                                "is_hidden": {"type": "boolean"},
-                            },
-                            "required": ["action", "timeline_id"],
-                        },
-                    }
-                },
-                "required": ["actions"],
-            },
-        ),
     ]
 
 
@@ -1109,6 +1073,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextCont
         result: Any
         if name == "find_entities":
             result = await handle_find_entities(**arguments)
+        elif name == "search_entities":
+            result = await handle_search_entities(**arguments)
         elif name == "create_entities":
             result = await handle_create_entities(**arguments)
         elif name == "update_entities":
@@ -1123,26 +1089,34 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextCont
             result = await handle_update_posts(**arguments)
         elif name == "delete_posts":
             result = await handle_delete_posts(**arguments)
-        elif name == "check_entity_updates":
-            result = await handle_check_entity_updates(**arguments)
-        elif name == "manage_relations":
-            result = await handle_manage_relations(**arguments)
-        elif name == "manage_attributes":
-            result = await handle_manage_attributes(**arguments)
-        elif name == "manage_organisation_members":
-            result = await handle_manage_organisation_members(**arguments)
         elif name == "manage_map_markers":
             result = await handle_manage_map_markers(**arguments)
-        elif name == "manage_map_groups":
-            result = await handle_manage_map_groups(**arguments)
-        elif name == "manage_map_layers":
-            result = await handle_manage_map_layers(**arguments)
-        elif name == "manage_calendar_reminders":
-            result = await handle_manage_calendar_reminders(**arguments)
-        elif name == "manage_timeline_eras":
-            result = await handle_manage_timeline_eras(**arguments)
+        elif name == "run_migration_plan":
+            result = await handle_run_migration_plan(**arguments)
+        elif name == "manage_relations":
+            result = await handle_manage_relations(**arguments)
         elif name == "manage_timeline_elements":
             result = await handle_manage_timeline_elements(**arguments)
+        elif name == "manage_attributes":
+            result = await handle_manage_attributes(**arguments)
+        elif name == "manage_entity_tags":
+            result = await handle_manage_entity_tags(**arguments)
+        elif name == "manage_inventory":
+            result = await handle_manage_inventory(**arguments)
+        elif name == "manage_permissions":
+            result = await handle_manage_permissions(**arguments)
+        elif name == "get_archives":
+            result = await handle_get_archives(**arguments)
+        elif name == "manage_entity_image":
+            result = await handle_manage_entity_image(**arguments)
+        elif name == "manage_calendar_weather":
+            result = await handle_manage_calendar_weather(**arguments)
+        elif name == "calendar_advance_date":
+            result = await handle_calendar_advance_date(**arguments)
+        elif name == "calendar_retreat_date":
+            result = await handle_calendar_retreat_date(**arguments)
+        elif name == "check_entity_updates":
+            result = await handle_check_entity_updates(**arguments)
         else:
             raise ValueError(f"Unknown tool: {name}")
 
@@ -1154,6 +1128,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextCont
 
 async def main() -> None:
     """Main entry point for the MCP server."""
+    # Validate required environment variables
     if not os.getenv("KANKA_TOKEN"):
         logger.error("KANKA_TOKEN environment variable is required")
         raise ValueError("KANKA_TOKEN environment variable is required")
@@ -1164,6 +1139,7 @@ async def main() -> None:
 
     logger.info("Starting Kanka MCP server...")
 
+    # Run the server
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
         await app.run(
             read_stream,
