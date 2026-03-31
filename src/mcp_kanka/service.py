@@ -46,9 +46,12 @@ class KankaService:
     API_ENDPOINT_MAP = {
         "character": "characters",
         "creature": "creatures",
+        "event": "events",
+        "family": "families",
         "ability": "abilities",
         "conversation": "conversations",
         "location": "locations",
+        "map": "maps",
         "organization": "organisations",  # API uses British spelling
         "dice_roll": "dice_rolls",
         "race": "races",
@@ -156,25 +159,65 @@ class KankaService:
         self, search_term: str, page: int = 1
     ) -> list[dict[str, Any]]:
         """Global search across entity types (GET search/{search_term})."""
-        results = self.client.search(search_term, page=page)
+        try:
+            results = self.client.search(search_term, page=page)
+        except Exception as e:
+            logger.warning(
+                "SDK global search failed (%s). Falling back to raw search endpoint.",
+                e,
+            )
+            raw = self.client._request("GET", f"search/{search_term}", params={"page": page})
+            rows = raw.get("data", raw)
+            results = rows if isinstance(rows, list) else []
 
         formatted: list[dict[str, Any]] = []
         for r in results:
+            row = r if isinstance(r, dict) else None
+            entity_id = getattr(r, "entity_id", None)
+            if entity_id is None and row is not None:
+                entity_id = row.get("entity_id")
+            if entity_id is None and row is not None:
+                # Some search payloads only expose `id`; degrade gracefully.
+                entity_id = row.get("id")
+
+            # Skip malformed or unsupported result shapes instead of failing the entire search.
+            if entity_id is None:
+                logger.warning(
+                    "Skipping malformed global search result without entity_id: %s", r
+                )
+                continue
+
+            created_at = getattr(r, "created_at", None)
+            if created_at is None and row is not None:
+                created_at = row.get("created_at")
+
+            updated_at = getattr(r, "updated_at", None)
+            if updated_at is None and row is not None:
+                updated_at = row.get("updated_at")
+
             formatted.append(
                 {
-                    "id": r.id,
-                    "entity_id": r.entity_id,
-                    "name": r.name,
-                    "image": r.image,
-                    "type": r.type,
-                    "tooltip": r.tooltip,
-                    "url": r.url,
-                    "is_private": r.is_private,
+                    "id": getattr(r, "id", row.get("id") if row else None),
+                    "entity_id": entity_id,
+                    "name": getattr(r, "name", row.get("name") if row else None),
+                    "image": getattr(r, "image", row.get("image") if row else None),
+                    "type": getattr(r, "type", row.get("type") if row else None),
+                    "tooltip": getattr(
+                        r, "tooltip", row.get("tooltip") if row else None
+                    ),
+                    "url": getattr(r, "url", row.get("url") if row else None),
+                    "is_private": getattr(
+                        r, "is_private", row.get("is_private") if row else None
+                    ),
                     "created_at": (
-                        r.created_at.isoformat() if r.created_at else None
+                        created_at.isoformat()
+                        if hasattr(created_at, "isoformat") and created_at
+                        else created_at
                     ),
                     "updated_at": (
-                        r.updated_at.isoformat() if r.updated_at else None
+                        updated_at.isoformat()
+                        if hasattr(updated_at, "isoformat") and updated_at
+                        else updated_at
                     ),
                 }
             )
@@ -417,7 +460,10 @@ class KankaService:
         return all_entities
 
     def get_entity_by_id(
-        self, entity_id: int, include_posts: bool = False
+        self,
+        entity_id: int,
+        include_posts: bool = False,
+        _allow_child_id_fallback: bool = True,
     ) -> dict[str, Any] | None:
         """
         Get a specific entity by its entity_id.
@@ -434,6 +480,22 @@ class KankaService:
             found_entity = self.client.entity(entity_id)
 
             if not found_entity:
+                if _allow_child_id_fallback:
+                    resolved_entity_id = self._resolve_entity_id_from_child_id(entity_id)
+                    if (
+                        resolved_entity_id is not None
+                        and resolved_entity_id != entity_id
+                    ):
+                        logger.info(
+                            "Resolved child id %s to entity_id %s",
+                            entity_id,
+                            resolved_entity_id,
+                        )
+                        return self.get_entity_by_id(
+                            resolved_entity_id,
+                            include_posts=include_posts,
+                            _allow_child_id_fallback=False,
+                        )
                 # Entity not found
                 return None
 
@@ -506,6 +568,59 @@ class KankaService:
             logger.error(f"Get entity failed for {entity_id}: {e}")
             return None
 
+    def get_entities_bulk(
+        self, entity_ids: list[int], include_posts: bool = False
+    ) -> dict[int, dict[str, Any]]:
+        """Fetch multiple entities in one request using ids[] filters."""
+        if not entity_ids:
+            return {}
+
+        params: dict[str, Any] = {"ids[]": entity_ids}
+        if include_posts:
+            params["related"] = 1
+
+        resp = self.client._request("GET", "entities", params=params)
+        rows = resp.get("data", [])
+        if not isinstance(rows, list):
+            return {}
+
+        mapped: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+
+            entity_id = row.get("entity_id")
+            if not isinstance(entity_id, int):
+                continue
+
+            row_type = row.get("type") or row.get("entity_type")
+            if not isinstance(row_type, str):
+                continue
+            our_type = "organization" if row_type == "organisation" else row_type
+
+            if our_type not in self.API_ENDPOINT_MAP:
+                # Keep bulk fetch tolerant if Kanka returns an unsupported type.
+                continue
+
+            mapped[entity_id] = self._entity_dict_to_dict(row, our_type)
+
+        return mapped
+
+    def _resolve_entity_id_from_child_id(self, child_id: int) -> int | None:
+        """Best-effort fallback to map module child ids to global entity_ids."""
+        for manager_name in self.API_ENDPOINT_MAP.values():
+            try:
+                manager = getattr(self.client, manager_name, None)
+                if manager is None:
+                    continue
+                candidate = manager.get(child_id)
+                resolved_id = getattr(candidate, "entity_id", None)
+                if isinstance(resolved_id, int):
+                    return resolved_id
+            except Exception:
+                continue
+        return None
+
     def create_entity(
         self,
         entity_type: EntityType,
@@ -515,9 +630,38 @@ class KankaService:
         tags: list[str] | None = None,
         is_hidden: bool | None = None,
         location_id: int | None = None,
+        parent_location_id: int | None = None,
+        title: str | None = None,
+        age: str | None = None,
+        sex: str | None = None,
+        pronouns: str | None = None,
+        race_id: int | None = None,
+        family_id: int | None = None,
+        is_dead: bool | None = None,
+        is_map_private: bool | None = None,
+        creature_id: int | None = None,
+        is_extinct: bool | None = None,
+        locations: list[int] | None = None,
+        note_id: int | None = None,
+        is_pinned: bool | None = None,
+        journal_id: int | None = None,
+        date: str | None = None,
+        character_id: int | None = None,
+        quest_id: int | None = None,
+        ability_id: int | None = None,
+        charges: int | None = None,
+        organisation_id: int | None = None,
+        is_defunct: bool | None = None,
+        map_id: int | None = None,
+        is_real: bool | None = None,
         is_completed: bool | None = None,
         image_uuid: str | None = None,
         header_uuid: str | None = None,
+        calendar_id: int | None = None,
+        calendar_year: int | None = None,
+        calendar_month: int | None = None,
+        calendar_day: int | None = None,
+        event_parent_id: int | None = None,
     ) -> dict[str, Any]:
         """
         Create a new entity.
@@ -532,6 +676,11 @@ class KankaService:
             is_completed: Whether quest is completed (quests only)
             image_uuid: Image gallery UUID for entity image
             header_uuid: Image gallery UUID for entity header
+            calendar_id: Calendar child id (events only)
+            calendar_year: In-world year on that calendar (events only)
+            calendar_month: In-world month (events only)
+            calendar_day: In-world day (events only)
+            event_parent_id: Parent event module child id (events only). API field is ``event_id``.
 
         Returns:
             Created entity data
@@ -565,13 +714,114 @@ class KankaService:
                 tag_ids = self._get_or_create_tag_ids(tags)
                 data["tags"] = tag_ids
 
-            # Handle location parent
-            if entity_type == "location" and location_id is not None:
-                data["location_id"] = location_id
+            if entity_type == "character":
+                if title is not None:
+                    data["title"] = title
+                if age is not None:
+                    data["age"] = age
+                if sex is not None:
+                    data["sex"] = sex
+                if pronouns is not None:
+                    data["pronouns"] = pronouns
+                if location_id is not None:
+                    data["location_id"] = location_id
+                if is_dead is not None:
+                    data["is_dead"] = is_dead
+                if race_id is not None:
+                    data["race_id"] = race_id
+                if family_id is not None:
+                    data["family_id"] = family_id
 
-            # Handle quest-specific field
-            if entity_type == "quest" and is_completed is not None:
-                data["is_completed"] = is_completed
+            if entity_type == "location":
+                # Backward-compatible alias: older callers used location_id for parent.
+                parent_id = (
+                    parent_location_id if parent_location_id is not None else location_id
+                )
+                if parent_id is not None:
+                    data["location_id"] = parent_id
+                if is_map_private is not None:
+                    data["is_map_private"] = is_map_private
+
+            if entity_type == "creature":
+                if creature_id is not None:
+                    data["creature_id"] = creature_id
+                if is_extinct is not None:
+                    data["is_extinct"] = is_extinct
+                if is_dead is not None:
+                    data["is_dead"] = is_dead
+                if locations is not None:
+                    data["locations"] = locations
+
+            if entity_type == "race" and race_id is not None:
+                data["race_id"] = race_id
+
+            if entity_type == "note":
+                if note_id is not None:
+                    data["note_id"] = note_id
+                if is_pinned is not None:
+                    data["is_pinned"] = is_pinned
+
+            if entity_type == "journal":
+                if journal_id is not None:
+                    data["journal_id"] = journal_id
+                if date is not None:
+                    data["date"] = date
+                if character_id is not None:
+                    data["character_id"] = character_id
+
+            if entity_type == "quest":
+                if quest_id is not None:
+                    data["quest_id"] = quest_id
+                if character_id is not None:
+                    data["character_id"] = character_id
+                if is_completed is not None:
+                    data["is_completed"] = is_completed
+
+            if entity_type == "ability":
+                if ability_id is not None:
+                    data["ability_id"] = ability_id
+                if charges is not None:
+                    data["charges"] = charges
+
+            if entity_type == "organization":
+                if organisation_id is not None:
+                    data["organisation_id"] = organisation_id
+                if location_id is not None:
+                    data["location_id"] = location_id
+                if is_defunct is not None:
+                    data["is_defunct"] = is_defunct
+
+            if entity_type == "family":
+                if family_id is not None:
+                    data["family_id"] = family_id
+                if location_id is not None:
+                    data["location_id"] = location_id
+
+            # Handle event-specific calendar placement (Kanka Events API)
+            if entity_type == "event":
+                if date is not None:
+                    data["date"] = date
+                if location_id is not None:
+                    data["location_id"] = location_id
+                if calendar_id is not None:
+                    data["calendar_id"] = calendar_id
+                if calendar_year is not None:
+                    data["calendar_year"] = calendar_year
+                if calendar_month is not None:
+                    data["calendar_month"] = calendar_month
+                if calendar_day is not None:
+                    data["calendar_day"] = calendar_day
+                # Parent event: Kanka model uses `event_id` (parent key), not entity_id
+                if event_parent_id is not None:
+                    data["event_id"] = event_parent_id
+
+            if entity_type == "map":
+                if map_id is not None:
+                    data["map_id"] = map_id
+                if location_id is not None:
+                    data["location_id"] = location_id
+                if is_real is not None:
+                    data["is_real"] = is_real
 
             # Handle image fields
             if image_uuid is not None:
@@ -606,9 +856,36 @@ class KankaService:
         tags: list[str] | None = None,
         is_hidden: bool | None = None,
         location_id: int | None = None,
+        parent_location_id: int | None = None,
+        title: str | None = None,
+        age: str | None = None,
+        sex: str | None = None,
+        pronouns: str | None = None,
+        race_id: int | None = None,
+        family_id: int | None = None,
+        is_dead: bool | None = None,
+        is_map_private: bool | None = None,
+        creature_id: int | None = None,
+        is_extinct: bool | None = None,
+        locations: list[int] | None = None,
+        note_id: int | None = None,
+        is_pinned: bool | None = None,
+        journal_id: int | None = None,
+        date: str | None = None,
+        character_id: int | None = None,
+        quest_id: int | None = None,
+        ability_id: int | None = None,
+        charges: int | None = None,
+        organisation_id: int | None = None,
+        is_defunct: bool | None = None,
+        map_id: int | None = None,
+        is_real: bool | None = None,
         is_completed: bool | None = None,
         image_uuid: str | None = None,
         header_uuid: str | None = None,
+        event_parent_id: int | None = None,
+        calendar_id: int | None = None,
+        calendar_id_set: bool = False,
     ) -> bool:
         """
         Update an existing entity.
@@ -623,6 +900,9 @@ class KankaService:
             is_completed: Whether quest is completed (quests only)
             image_uuid: Image gallery UUID for entity image
             header_uuid: Image gallery UUID for entity header
+            event_parent_id: Parent event module child id (events only). API field is ``event_id``.
+            calendar_id: Calendar child id for events. Can be None when detaching.
+            calendar_id_set: Whether ``calendar_id`` was explicitly provided by caller.
 
         Returns:
             True if successful
@@ -658,13 +938,109 @@ class KankaService:
                 tag_ids = self._get_or_create_tag_ids(tags)
                 data["tags"] = tag_ids
 
-            # Handle location parent
-            if entity_type == "location" and location_id is not None:
-                data["location_id"] = location_id
+            if entity_type == "character":
+                if title is not None:
+                    data["title"] = title
+                if age is not None:
+                    data["age"] = age
+                if sex is not None:
+                    data["sex"] = sex
+                if pronouns is not None:
+                    data["pronouns"] = pronouns
+                if location_id is not None:
+                    data["location_id"] = location_id
+                if is_dead is not None:
+                    data["is_dead"] = is_dead
+                if race_id is not None:
+                    data["race_id"] = race_id
+                if family_id is not None:
+                    data["family_id"] = family_id
+
+            if entity_type == "location":
+                parent_id = (
+                    parent_location_id if parent_location_id is not None else location_id
+                )
+                if parent_id is not None:
+                    data["location_id"] = parent_id
+                if is_map_private is not None:
+                    data["is_map_private"] = is_map_private
+
+            if entity_type == "creature":
+                if creature_id is not None:
+                    data["creature_id"] = creature_id
+                if is_extinct is not None:
+                    data["is_extinct"] = is_extinct
+                if is_dead is not None:
+                    data["is_dead"] = is_dead
+                if locations is not None:
+                    data["locations"] = locations
+
+            if entity_type == "race" and race_id is not None:
+                data["race_id"] = race_id
+
+            if entity_type == "note":
+                if note_id is not None:
+                    data["note_id"] = note_id
+                if is_pinned is not None:
+                    data["is_pinned"] = is_pinned
+
+            if entity_type == "journal":
+                if journal_id is not None:
+                    data["journal_id"] = journal_id
+                if date is not None:
+                    data["date"] = date
+                if character_id is not None:
+                    data["character_id"] = character_id
+
+            # Handle event parent (API uses `event_id` for the parent event module row)
+            if entity_type == "event" and event_parent_id is not None:
+                data["event_id"] = event_parent_id
+            # Handle event calendar linkage. Explicit null should be sent when requested.
+            if entity_type == "event" and calendar_id_set:
+                data["calendar_id"] = calendar_id
 
             # Handle quest-specific field
-            if entity_type == "quest" and is_completed is not None:
-                data["is_completed"] = is_completed
+            if entity_type == "quest":
+                if quest_id is not None:
+                    data["quest_id"] = quest_id
+                if character_id is not None:
+                    data["character_id"] = character_id
+                if is_completed is not None:
+                    data["is_completed"] = is_completed
+
+            if entity_type == "ability":
+                if ability_id is not None:
+                    data["ability_id"] = ability_id
+                if charges is not None:
+                    data["charges"] = charges
+
+            if entity_type == "organization":
+                if organisation_id is not None:
+                    data["organisation_id"] = organisation_id
+                if location_id is not None:
+                    data["location_id"] = location_id
+                if is_defunct is not None:
+                    data["is_defunct"] = is_defunct
+
+            if entity_type == "family":
+                if family_id is not None:
+                    data["family_id"] = family_id
+                if location_id is not None:
+                    data["location_id"] = location_id
+
+            if entity_type == "event":
+                if date is not None:
+                    data["date"] = date
+                if location_id is not None:
+                    data["location_id"] = location_id
+
+            if entity_type == "map":
+                if map_id is not None:
+                    data["map_id"] = map_id
+                if location_id is not None:
+                    data["location_id"] = location_id
+                if is_real is not None:
+                    data["is_real"] = is_real
 
             # Handle image fields
             if image_uuid is not None:
@@ -1005,6 +1381,35 @@ class KankaService:
         params: dict[str, Any] = {"page": page, "limit": limit}
         return self.client._request("GET", endpoint, params=params)
 
+    def list_timeline_elements_all(
+        self, timeline_id: int, limit: int = 15, max_pages: int = 200
+    ) -> dict[str, Any]:
+        """List all timeline elements by paginating until last page or empty batch."""
+        merged: list[Any] = []
+        page = 1
+        last_page = 1
+        while page <= max_pages:
+            resp = self.list_timeline_elements(timeline_id, page=page, limit=limit)
+            batch = resp.get("data")
+            if not isinstance(batch, list):
+                batch = []
+            merged.extend(batch)
+            meta = resp.get("meta") or {}
+            lp = meta.get("last_page") or meta.get("lastPage")
+            if isinstance(lp, int) and lp > 0:
+                last_page = lp
+                if page >= lp:
+                    break
+            elif not batch:
+                break
+            page += 1
+
+        return {
+            "data": merged,
+            "links": {},
+            "meta": {"fetch_all": True, "total": len(merged), "last_page": last_page},
+        }
+
     def create_timeline_element(
         self, timeline_id: int, payload: dict[str, Any]
     ) -> dict[str, Any]:
@@ -1024,6 +1429,39 @@ class KankaService:
     ) -> dict[str, Any]:
         """Delete a timeline element."""
         endpoint = f"timelines/{timeline_id}/timeline_elements/{element_id}"
+        self.client._request("DELETE", endpoint)
+        return {"success": True}
+
+    # ----------------------------
+    # Timeline era operations
+    # ----------------------------
+    def list_timeline_eras(
+        self, timeline_id: int, page: int = 1, limit: int = 15
+    ) -> dict[str, Any]:
+        """List timeline eras for a timeline (paginated; returns links/meta)."""
+        endpoint = f"timelines/{timeline_id}/eras"
+        params: dict[str, Any] = {"page": page, "limit": limit}
+        return self.client._request("GET", endpoint, params=params)
+
+    def create_timeline_era(
+        self, timeline_id: int, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Create a timeline era."""
+        endpoint = f"timelines/{timeline_id}/eras"
+        return self.client._request("POST", endpoint, json=payload)
+
+    def update_timeline_era(
+        self, timeline_id: int, era_id: int, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Update a timeline era using PATCH with an explicit payload."""
+        endpoint = f"timelines/{timeline_id}/eras/{era_id}"
+        return self.client._request("PATCH", endpoint, json=payload)
+
+    def delete_timeline_era(
+        self, timeline_id: int, era_id: int
+    ) -> dict[str, Any]:
+        """Delete a timeline era."""
+        endpoint = f"timelines/{timeline_id}/eras/{era_id}"
         self.client._request("DELETE", endpoint)
         return {"success": True}
 
@@ -1227,6 +1665,30 @@ class KankaService:
         except Exception:
             return {"success": True, "raw": resp.text}
 
+    def list_calendars(self, page: int = 1, limit: int = 15) -> dict[str, Any]:
+        endpoint = "calendars"
+        params = {"page": page, "limit": limit}
+        return self.raw_request("GET", endpoint, params=params)
+
+    def create_calendar(self, payload: dict[str, Any]) -> dict[str, Any]:
+        endpoint = "calendars"
+        return self.raw_request("POST", endpoint, json=payload)
+
+    def update_calendar(self, calendar_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        endpoint = f"calendars/{calendar_id}"
+        return self.raw_request("PATCH", endpoint, json=payload)
+
+    def delete_calendar(self, calendar_id: int) -> dict[str, Any]:
+        endpoint = f"calendars/{calendar_id}"
+        url = f"{self.client.BASE_URL}/campaigns/{self.client.campaign_id}/{endpoint}"
+        resp = self.client.session.request("DELETE", url)
+        if not resp.text:
+            return {"success": True}
+        try:
+            return resp.json()
+        except Exception:
+            return {"success": True, "raw": resp.text}
+
     def calendar_advance_date(self, calendar_id: int) -> dict[str, Any]:
         endpoint = f"calendars/{calendar_id}/advance"
         return self.client._request("POST", endpoint)
@@ -1234,6 +1696,106 @@ class KankaService:
     def calendar_retreat_date(self, calendar_id: int) -> dict[str, Any]:
         endpoint = f"calendars/{calendar_id}/retreat"
         return self.client._request("POST", endpoint)
+
+    def list_calendar_events(
+        self, calendar_id: int, page: int = 1, limit: int = 15
+    ) -> dict[str, Any]:
+        endpoint = f"calendars/{calendar_id}/reminders"
+        params = {"page": page, "limit": limit}
+        return self.raw_request("GET", endpoint, params=params)
+
+    def list_calendar_events_all(
+        self, calendar_id: int, limit: int = 15, max_pages: int = 200
+    ) -> dict[str, Any]:
+        """List all calendar reminders by paginating until the last page or empty batch."""
+        merged: list[Any] = []
+        page = 1
+        last_page = 1
+
+        while page <= max_pages:
+            resp = self.list_calendar_events(calendar_id, page=page, limit=limit)
+            batch = resp.get("data")
+            if not isinstance(batch, list):
+                batch = []
+            merged.extend(batch)
+
+            meta = resp.get("meta") or {}
+            lp = meta.get("last_page") or meta.get("lastPage")
+            if isinstance(lp, int) and lp > 0:
+                last_page = lp
+                if page >= lp:
+                    break
+            elif not batch:
+                break
+
+            page += 1
+
+        return {
+            "data": merged,
+            "links": {},
+            "meta": {
+                "fetch_all": True,
+                "total": len(merged),
+                "last_page": last_page,
+            },
+        }
+
+    def create_calendar_event(
+        self, calendar_id: int, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        endpoint = f"calendars/{calendar_id}/reminders"
+        return self.client._request("POST", endpoint, json=payload)
+
+    def update_calendar_event(
+        self, calendar_id: int, calendar_event_id: int, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        endpoint = f"calendars/{calendar_id}/reminders/{calendar_event_id}"
+        return self.client._request("PATCH", endpoint, json=payload)
+
+    def delete_calendar_event(
+        self, calendar_id: int, calendar_event_id: int
+    ) -> dict[str, Any]:
+        endpoint = f"calendars/{calendar_id}/reminders/{calendar_event_id}"
+        url = (
+            f"{self.client.BASE_URL}/campaigns/{self.client.campaign_id}/{endpoint}"
+        )
+        resp = self.client.session.request("DELETE", url)
+        if not resp.text:
+            return {"success": True}
+        try:
+            return resp.json()
+        except Exception:
+            return {"success": True, "raw": resp.text}
+
+    def create_entity_reminder(
+        self, entity_id: int, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        endpoint = f"entities/{entity_id}/entity_events"
+        return self.raw_request("POST", endpoint, json=payload)
+
+    def update_entity_reminder(
+        self, entity_id: int, reminder_id: int, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        endpoint = f"entities/{entity_id}/entity_events/{reminder_id}"
+        return self.raw_request("PATCH", endpoint, json=payload)
+
+    def delete_entity_reminder(self, entity_id: int, reminder_id: int) -> dict[str, Any]:
+        endpoint = f"entities/{entity_id}/entity_events/{reminder_id}"
+        url = f"{self.client.BASE_URL}/campaigns/{self.client.campaign_id}/{endpoint}"
+        resp = self.client.session.request("DELETE", url)
+        if not resp.text:
+            return {"success": True}
+        try:
+            return resp.json()
+        except Exception:
+            return {"success": True, "raw": resp.text}
+
+    def list_entity_reminders(
+        self, entity_id: int, page: int = 1, limit: int = 15
+    ) -> dict[str, Any]:
+        endpoint = f"entities/{entity_id}/reminders"
+        params = {"page": page, "limit": limit}
+        return self.raw_request("GET", endpoint, params=params)
 
     def _get_or_create_tag_ids(self, tag_names: list[str]) -> list[int]:
         """

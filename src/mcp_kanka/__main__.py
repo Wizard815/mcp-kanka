@@ -31,11 +31,14 @@ from .tools import (
     handle_run_migration_plan,
     handle_manage_inventory,
     handle_manage_relations,
+    handle_manage_timeline_eras,
     handle_manage_timeline_elements,
     handle_search_entities,
     handle_manage_permissions,
     handle_manage_entity_image,
+    handle_manage_calendars,
     handle_manage_calendar_weather,
+    handle_manage_calendar_events,
     handle_get_archives,
     handle_calendar_advance_date,
     handle_calendar_retreat_date,
@@ -99,8 +102,11 @@ async def list_tools() -> list[types.Tool]:
                             "character",
                             "conversation",
                             "creature",
+                            "event",
+                            "family",
                             "dice_roll",
                             "location",
+                            "map",
                             "organization",
                             "race",
                             "note",
@@ -108,6 +114,8 @@ async def list_tools() -> list[types.Tool]:
                             "bookmark",
                             "quest",
                             "attribute",
+                            "timeline",
+                            "calendar",
                         ],
                         "description": "Entity type to filter by",
                     },
@@ -132,12 +140,12 @@ async def list_tools() -> list[types.Tool]:
                     "tags": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Filter by tag names (resolved to tag IDs for API-side filtering; requires ALL specified tags)",
+                        "description": "Filter by tag names (strings only; resolved to tag IDs for API-side filtering; requires ALL specified tags).",
                     },
                     "tag_id": {
                         "type": "array",
                         "items": {"type": "integer"},
-                        "description": "Filter by tag IDs (requires ALL specified tags)",
+                        "description": "Filter by tag IDs (integers only; requires ALL specified tags).",
                     },
                     "date_range": {
                         "type": "object",
@@ -206,7 +214,10 @@ async def list_tools() -> list[types.Tool]:
                                         "character",
                                         "conversation",
                                         "creature",
+                                        "event",
+                                        "family",
                                         "location",
+                                        "map",
                                         "dice_roll",
                                         "organization",
                                         "race",
@@ -232,12 +243,69 @@ async def list_tools() -> list[types.Tool]:
                                 },
                                 "location_id": {
                                     "type": "integer",
-                                    "description": "Location parent child_id (locations/{location.id}). Use the Location module `id` field (NOT entity_id). (locations create only)",
+                                    "description": "Location child id (module id, not entity_id). Meaning depends on entity type.",
                                 },
+                                "parent_location_id": {
+                                    "type": "integer",
+                                    "description": "Locations only: parent location child id (mapped to API `location_id`).",
+                                },
+                                "title": {"type": "string"},
+                                "age": {"type": "string"},
+                                "sex": {"type": "string"},
+                                "pronouns": {"type": "string"},
+                                "race_id": {
+                                    "type": "integer",
+                                    "description": "Character race child id, or parent race child id for races.",
+                                },
+                                "family_id": {
+                                    "type": "integer",
+                                    "description": "Character/family parent family child id.",
+                                },
+                                "is_dead": {"type": "boolean"},
+                                "is_map_private": {"type": "boolean"},
+                                "creature_id": {"type": "integer"},
+                                "is_extinct": {"type": "boolean"},
+                                "locations": {
+                                    "type": "array",
+                                    "items": {"type": "integer"},
+                                    "description": "Creatures only: array of location child ids.",
+                                },
+                                "note_id": {"type": "integer"},
+                                "is_pinned": {"type": "boolean"},
+                                "journal_id": {"type": "integer"},
+                                "date": {"type": "string"},
+                                "character_id": {"type": "integer"},
+                                "quest_id": {"type": "integer"},
+                                "ability_id": {"type": "integer"},
+                                "charges": {"type": "integer"},
+                                "organisation_id": {"type": "integer"},
+                                "is_defunct": {"type": "boolean"},
+                                "map_id": {"type": "integer"},
+                                "is_real": {"type": "boolean"},
                                 "tags": {"type": "array", "items": {"type": "string"}},
                                 "is_hidden": {
                                     "type": "boolean",
                                     "description": "If true, hidden from players (admin-only)",
+                                },
+                                "calendar_id": {
+                                    "type": "integer",
+                                    "description": "Calendar child id (calendars/{calendar.id}) — events only",
+                                },
+                                "calendar_year": {
+                                    "type": "integer",
+                                    "description": "In-world year on that calendar — events only",
+                                },
+                                "calendar_month": {
+                                    "type": "integer",
+                                    "description": "In-world month — events only",
+                                },
+                                "calendar_day": {
+                                    "type": "integer",
+                                    "description": "In-world day — events only",
+                                },
+                                "event_parent_id": {
+                                    "type": "integer",
+                                    "description": "Events only. Parent event module child id (events/{id}, NOT entity_id). Sent to the API as `event_id`.",
                                 },
                             },
                             "required": ["entity_type", "name"],
@@ -276,10 +344,48 @@ async def list_tools() -> list[types.Tool]:
                                 },
                                 "location_id": {
                                     "type": "integer",
-                                    "description": "Location parent child_id (locations/{location.id}). Use the Location module `id` field (NOT entity_id). (locations update only)",
+                                    "description": "Location child id (module id, not entity_id). Meaning depends on entity type.",
                                 },
+                                "parent_location_id": {
+                                    "type": "integer",
+                                    "description": "Locations only: parent location child id (mapped to API `location_id`).",
+                                },
+                                "title": {"type": "string"},
+                                "age": {"type": "string"},
+                                "sex": {"type": "string"},
+                                "pronouns": {"type": "string"},
+                                "race_id": {"type": "integer"},
+                                "family_id": {"type": "integer"},
+                                "is_dead": {"type": "boolean"},
+                                "is_map_private": {"type": "boolean"},
+                                "creature_id": {"type": "integer"},
+                                "is_extinct": {"type": "boolean"},
+                                "locations": {
+                                    "type": "array",
+                                    "items": {"type": "integer"},
+                                },
+                                "note_id": {"type": "integer"},
+                                "is_pinned": {"type": "boolean"},
+                                "journal_id": {"type": "integer"},
+                                "date": {"type": "string"},
+                                "character_id": {"type": "integer"},
+                                "quest_id": {"type": "integer"},
+                                "ability_id": {"type": "integer"},
+                                "charges": {"type": "integer"},
+                                "organisation_id": {"type": "integer"},
+                                "is_defunct": {"type": "boolean"},
+                                "map_id": {"type": "integer"},
+                                "is_real": {"type": "boolean"},
                                 "tags": {"type": "array", "items": {"type": "string"}},
                                 "is_hidden": {"type": "boolean"},
+                                "event_parent_id": {
+                                    "type": "integer",
+                                    "description": "Events only. Parent event module child id (events/{id}, NOT entity_id). Sent to the API as `event_id`.",
+                                },
+                                "calendar_id": {
+                                    "type": ["integer", "null"],
+                                    "description": "Events only. Calendar child id; set to null to detach event from calendar.",
+                                },
                             },
                             "required": ["entity_id"],
                         },
@@ -290,14 +396,14 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="get_entities",
-            description="Retrieve specific entities by ID with their posts",
+            description="Retrieve specific entities by global entity_id with their posts",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "entity_ids": {
                         "type": "array",
                         "items": {"type": "integer"},
-                        "description": "Array of entity IDs to retrieve",
+                        "description": "Array of global entity IDs (`/entities/{id}`), not module child IDs like `/timelines/{id}` or `/calendars/{id}`.",
                     },
                     "include_posts": {
                         "type": "boolean",
@@ -310,7 +416,12 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="delete_entities",
-            description="Delete one or more entities",
+            description=(
+                "Delete one or more entities (no undo; confirm with get_entities first). "
+                "Deletes run in concurrent waves of at most batch_size (default 12, max 15) "
+                "to avoid timeouts on large lists. Optional delay_ms between waves reduces rate limits. "
+                "Use dry_run=true to preview deletions without deleting."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -318,7 +429,26 @@ async def list_tools() -> list[types.Tool]:
                         "type": "array",
                         "items": {"type": "integer"},
                         "description": "Array of entity IDs to delete",
-                    }
+                    },
+                    "batch_size": {
+                        "type": "integer",
+                        "description": "Max concurrent deletes per wave (1–15; default 12). Larger lists are auto-chunked.",
+                        "default": 12,
+                        "minimum": 1,
+                        "maximum": 15,
+                    },
+                    "delay_ms": {
+                        "type": "integer",
+                        "description": "Milliseconds to wait after each wave except the last (0–60000; default 500).",
+                        "default": 500,
+                        "minimum": 0,
+                        "maximum": 60000,
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "If true, return what would be deleted without deleting anything.",
+                        "default": False,
+                    },
                 },
                 "required": ["entity_ids"],
             },
@@ -608,6 +738,68 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="manage_timeline_eras",
+            description="Manage timeline eras for a timeline (list/create/update/delete) via action-based payloads",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "create", "update", "delete"],
+                        "description": "Which operation to perform",
+                    },
+                    "timeline_id": {
+                        "type": "integer",
+                        "description": "Timeline child id from `/timelines/{id}` (used in `timelines/{timeline.id}` path), not `/entities/{id}`. Discover via `find_entities` with `entity_type=\"timeline\"`.",
+                    },
+                    "era_id": {
+                        "type": "integer",
+                        "description": "Timeline era child id. Required for update/delete only.",
+                    },
+                    "page": {
+                        "type": "integer",
+                        "description": "Pagination page (list only)",
+                        "default": 1,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Pagination limit (list only)",
+                        "default": 15,
+                    },
+                    "fetch_all": {
+                        "type": "boolean",
+                        "description": "List only: if true, fetch all pages and merge into one data array.",
+                        "default": False,
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Era name (create/update only; required for create).",
+                    },
+                    "abbreviation": {
+                        "type": "string",
+                        "description": "Era abbreviation label (create/update only).",
+                    },
+                    "start_year": {
+                        "type": "integer",
+                        "description": "Era start year (create/update only).",
+                    },
+                    "end_year": {
+                        "type": "integer",
+                        "description": "Era end year (create/update only).",
+                    },
+                    "position": {
+                        "type": "integer",
+                        "description": "Order position on timeline (create/update only).",
+                    },
+                    "is_collapsed": {
+                        "type": "boolean",
+                        "description": "Whether this era is collapsed by default (create/update only).",
+                    },
+                },
+                "required": ["action", "timeline_id"],
+            },
+        ),
+        types.Tool(
             name="manage_timeline_elements",
             description="Manage timeline elements for a timeline (list/create/update/delete) via action-based payloads",
             inputSchema={
@@ -620,7 +812,7 @@ async def list_tools() -> list[types.Tool]:
                     },
                     "timeline_id": {
                         "type": "integer",
-                        "description": "Timeline child id (used in `timelines/{timeline.id}` path) for list/create/update/delete.",
+                        "description": "Timeline child id from `/timelines/{id}` (used in `timelines/{timeline.id}` path), not `/entities/{id}`. Discover via `find_entities` with `entity_type=\"timeline\"`.",
                     },
                     "element_id": {
                         "type": "integer",
@@ -898,6 +1090,61 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="manage_calendars",
+            description="Manage calendars (list/create/update/delete) via action-based payloads",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "create", "update", "delete"],
+                        "description": "Which operation to perform",
+                    },
+                    "calendar_id": {
+                        "type": "integer",
+                        "description": "Calendar child id (required for update/delete only).",
+                    },
+                    "page": {
+                        "type": "integer",
+                        "description": "Pagination page (list only)",
+                        "default": 1,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Pagination limit (list only)",
+                        "default": 15,
+                    },
+                    "name": {"type": "string", "description": "Calendar name (create/update only; required for create)."},
+                    "month_name": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Array of month names (create/update only).",
+                    },
+                    "month_length": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Array of month lengths (create/update only).",
+                    },
+                    "weekday": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Array of weekday names (create/update only).",
+                    },
+                    "suffix": {
+                        "type": "string",
+                        "description": "Year suffix like AE/CE (create/update only).",
+                    },
+                    "current_year": {"type": "integer", "description": "Current year (create/update only)."},
+                    "current_month": {"type": "integer", "description": "Current month (create/update only)."},
+                    "current_day": {"type": "integer", "description": "Current day (create/update only)."},
+                    "has_leap_year": {"type": "boolean", "description": "Whether leap years are enabled (create/update only)."},
+                    "skip_year_zero": {"type": "boolean", "description": "Whether year zero is skipped (create/update only)."},
+                    "format": {"type": "string", "description": "Display format string (create/update only)."},
+                },
+                "required": ["action"],
+            },
+        ),
+        types.Tool(
             name="manage_calendar_weather",
             description="Manage calendar weather effects (list/create/update/delete) via action-based payloads",
             inputSchema={
@@ -910,7 +1157,7 @@ async def list_tools() -> list[types.Tool]:
                     },
                     "calendar_id": {
                         "type": "integer",
-                        "description": "Calendar child id (used in `calendars/{calendar.id}/...`).",
+                        "description": "Calendar child id. Used by list (`calendars/{id}/reminders`) and required in create/update payloads for entity reminders.",
                     },
                     "calendar_weather_id": {
                         "type": "integer",
@@ -967,8 +1214,62 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="manage_calendar_events",
+            description="Manage calendar reminders (list/create/update/delete). List uses calendar reminders; writes use entity_events endpoints.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "create", "update", "delete"],
+                        "description": "Which operation to perform",
+                    },
+                    "calendar_id": {
+                        "type": "integer",
+                        "description": "Calendar child id (list endpoint and required create field).",
+                    },
+                    "entity_id": {
+                        "type": "integer",
+                        "description": "Global entity_id owning the reminder. Required for create/update/delete.",
+                    },
+                    "calendar_event_id": {
+                        "type": "integer",
+                        "description": "Reminder id (required for update/delete).",
+                    },
+                    "page": {
+                        "type": "integer",
+                        "description": "Pagination page (list only)",
+                        "default": 1,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Pagination limit (list only)",
+                        "default": 15,
+                    },
+                    "fetch_all": {
+                        "type": "boolean",
+                        "description": "List only: if true, fetch all pages and merge into one data array (uses limit per request).",
+                        "default": False,
+                    },
+                    "name": {"type": "string", "description": "Create/update only."},
+                    "day": {"type": "integer", "description": "Create/update only."},
+                    "month": {"type": "integer", "description": "Create/update only."},
+                    "year": {"type": "integer", "description": "Create/update only."},
+                    "length": {"type": "integer", "description": "Create/update only."},
+                    "colour": {"type": "string", "description": "Optional hex colour."},
+                    "comment": {"type": "string"},
+                    "is_recurring": {"type": "boolean"},
+                    "recurring_periodicity": {"type": "string"},
+                    "recurring_until": {"type": "integer"},
+                    "type_id": {"type": "integer"},
+                    "visibility_id": {"type": "integer"},
+                },
+                "required": ["action", "calendar_id"],
+            },
+        ),
+        types.Tool(
             name="calendar_advance_date",
-            description="Advance a calendar date by one day",
+            description="Advance a calendar date by one day (single-step nudge, not bulk date setter)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -982,7 +1283,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="calendar_retreat_date",
-            description="Retreat a calendar date by one day",
+            description="Retreat a calendar date by one day (single-step nudge, not bulk date setter)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -999,9 +1300,13 @@ async def list_tools() -> list[types.Tool]:
             description=(
                 "Run a whitelisted multi-step migration (JSON steps, not arbitrary Python). "
                 "Same sequencing as a hand-written script: map marker updates (with safe entity_id clears), "
-                "entity updates, tag removals, entity deletes, optional sleeps. "
+                "entity creates/updates, post creates, tag removals, entity deletes, optional sleeps. "
                 "Each step: {\"op\": ...}. Ops: update_map_marker (map_id, marker_id, fields), "
-                "update_entity (entity_id, fields), remove_entity_tags_by_tag_id (entity_id, tag_id), "
+                "update_calendar_event (calendar_id, calendar_event_id, fields), "
+                "create_reminder (entity_id, fields), "
+                "create_entity (fields; for entity_type event include calendar_*, event_parent_id → API event_id), "
+                "create_post (fields), "
+                "update_entity (entity_id, fields; events may set event_parent_id), remove_entity_tags_by_tag_id (entity_id, tag_id), "
                 "delete_entity (entity_id), sleep_ms (ms)."
             ),
             inputSchema={
@@ -1017,6 +1322,10 @@ async def list_tools() -> list[types.Tool]:
                                     "type": "string",
                                     "enum": [
                                         "update_map_marker",
+                                        "update_calendar_event",
+                                        "create_reminder",
+                                        "create_entity",
+                                        "create_post",
                                         "delete_entity",
                                         "update_entity",
                                         "remove_entity_tags_by_tag_id",
@@ -1025,8 +1334,14 @@ async def list_tools() -> list[types.Tool]:
                                 },
                                 "map_id": {"type": "integer"},
                                 "marker_id": {"type": "integer"},
+                                "calendar_id": {"type": "integer"},
+                                "calendar_event_id": {"type": "integer"},
                                 "fields": {"type": "object"},
                                 "entity_id": {"type": "integer"},
+                                "entity_type": {"type": "string"},
+                                "name": {"type": "string"},
+                                "entry": {"type": "string"},
+                                "is_hidden": {"type": "boolean"},
                                 "tag_id": {"type": "integer"},
                                 "ms": {"type": "integer"},
                             },
@@ -1097,6 +1412,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextCont
             result = await handle_manage_relations(**arguments)
         elif name == "manage_timeline_elements":
             result = await handle_manage_timeline_elements(**arguments)
+        elif name == "manage_timeline_eras":
+            result = await handle_manage_timeline_eras(**arguments)
         elif name == "manage_attributes":
             result = await handle_manage_attributes(**arguments)
         elif name == "manage_entity_tags":
@@ -1109,8 +1426,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextCont
             result = await handle_get_archives(**arguments)
         elif name == "manage_entity_image":
             result = await handle_manage_entity_image(**arguments)
+        elif name == "manage_calendars":
+            result = await handle_manage_calendars(**arguments)
         elif name == "manage_calendar_weather":
             result = await handle_manage_calendar_weather(**arguments)
+        elif name == "manage_calendar_events":
+            result = await handle_manage_calendar_events(**arguments)
         elif name == "calendar_advance_date":
             result = await handle_calendar_advance_date(**arguments)
         elif name == "calendar_retreat_date":

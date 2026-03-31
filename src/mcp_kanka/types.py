@@ -1,23 +1,26 @@
 """Type definitions for the Kanka MCP server."""
 
-from typing import Any, Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 # Supported entity types
 EntityType = Literal[
+    "ability",
+    "attribute",
+    "bookmark",
     "calendar",
     "character",
+    "conversation",
     "creature",
+    "dice_roll",
     "event",
     "family",
-    "item",
+    "journal",
     "location",
     "map",
     "organization",
     "race",
     "note",
-    "journal",
     "quest",
-    "tag",
     "timeline",
 ]
 
@@ -40,6 +43,7 @@ class FindEntitiesParams(TypedDict, total=False):
     name_fuzzy: bool | None
     type: str | None
     tags: list[str] | None
+    tag_id: list[int] | None
     date_range: DateRange | None
     include_full: bool | None
     page: int | None
@@ -47,55 +51,59 @@ class FindEntitiesParams(TypedDict, total=False):
     last_synced: str | None  # ISO 8601 timestamp
 
 
-class EntityInput(TypedDict, total=False):
+class EntityInput(TypedDict):
     """Input for creating an entity."""
 
-    entity_type: EntityType  # required
-    name: str  # required
+    entity_type: EntityType
+    name: str
     type: str | None
     entry: str | None
     tags: list[str] | None
     is_hidden: bool | None
-    # Nesting: parent entity of the same type
-    parent_id: int | None
-    # Character-specific
+    # Location-specific: parent Location child_id (the Location module `id`, not an entity_id)
     location_id: int | None
-    title: str | None
-    age: str | None
-    sex: str | None
-    pronouns: str | None
-    is_dead: bool | None
-    races: list[int] | None
-    families: list[int] | None
-    # Organisation-specific
-    is_defunct: bool | None
+    # Event-specific: calendar child id (calendars/{calendar.id}) and in-world date (events create)
+    calendar_id: NotRequired[int | None]
+    calendar_year: NotRequired[int | None]
+    calendar_month: NotRequired[int | None]
+    calendar_day: NotRequired[int | None]
+    # Event-specific: parent Event module child id (events/{id}); sent to API as `event_id`
+    event_parent_id: NotRequired[int | None]
+    # Character-specific
+    title: NotRequired[str | None]
+    age: NotRequired[str | None]
+    sex: NotRequired[str | None]
+    pronouns: NotRequired[str | None]
+    race_id: NotRequired[int | None]
+    family_id: NotRequired[int | None]
+    is_dead: NotRequired[bool | None]
+    # Location-specific
+    parent_location_id: NotRequired[int | None]
+    is_map_private: NotRequired[bool | None]
+    # Creature-specific
+    creature_id: NotRequired[int | None]
+    is_extinct: NotRequired[bool | None]
+    locations: NotRequired[list[int] | None]
+    # Race-specific
+    # `race_id` is shared with character and used as parent-race id for races.
+    # Note-specific
+    note_id: NotRequired[int | None]
+    is_pinned: NotRequired[bool | None]
     # Journal-specific
-    date: str | None
-    character_id: int | None
-    # Family-specific
-    is_extinct: bool | None
-    # Item-specific
-    creator_id: int | None
-    price: str | None
-    size: str | None
-    weight: str | None
-    # Tag-specific
-    colour: str | None
+    journal_id: NotRequired[int | None]
+    date: NotRequired[str | None]
+    character_id: NotRequired[int | None]
     # Quest-specific
-    is_completed: bool | None
+    quest_id: NotRequired[int | None]
+    # Ability-specific
+    ability_id: NotRequired[int | None]
+    charges: NotRequired[int | None]
+    # Organisation-specific
+    organisation_id: NotRequired[int | None]
+    is_defunct: NotRequired[bool | None]
     # Map-specific
-    center_marker_id: int | None
-    center_x: float | None
-    center_y: float | None
-    is_real: bool | None
-    # Event-specific
-    calendar_id: int | None
-    calendar_year: int | None
-    calendar_month: int | None
-    calendar_day: int | None
-    # Image fields
-    image_uuid: str | None
-    header_uuid: str | None
+    map_id: NotRequired[int | None]
+    is_real: NotRequired[bool | None]
 
 
 class CreateEntitiesParams(TypedDict):
@@ -104,55 +112,54 @@ class CreateEntitiesParams(TypedDict):
     entities: list[EntityInput]
 
 
-class EntityUpdate(TypedDict, total=False):
+class EntityUpdate(TypedDict):
     """Update for an entity."""
 
-    entity_id: int  # required
-    name: str  # required
+    entity_id: int
+    name: str | None
     type: str | None
     entry: str | None
     tags: list[str] | None
     is_hidden: bool | None
-    # Nesting: parent entity of the same type
-    parent_id: int | None
-    # Character-specific
+    # Location-specific: parent Location child_id (the Location module `id`, not an entity_id)
     location_id: int | None
-    title: str | None
-    age: str | None
-    sex: str | None
-    pronouns: str | None
-    is_dead: bool | None
-    races: list[int] | None
-    families: list[int] | None
-    # Organisation-specific
-    is_defunct: bool | None
+    # Event-specific: parent Event module child id; sent to API as `event_id`
+    event_parent_id: NotRequired[int | None]
+    # Event-specific: calendar child id (nullable). Include key with null to detach event from calendar.
+    calendar_id: NotRequired[int | None]
+    # Character-specific
+    title: NotRequired[str | None]
+    age: NotRequired[str | None]
+    sex: NotRequired[str | None]
+    pronouns: NotRequired[str | None]
+    race_id: NotRequired[int | None]
+    family_id: NotRequired[int | None]
+    is_dead: NotRequired[bool | None]
+    # Location-specific
+    parent_location_id: NotRequired[int | None]
+    is_map_private: NotRequired[bool | None]
+    # Creature-specific
+    creature_id: NotRequired[int | None]
+    is_extinct: NotRequired[bool | None]
+    locations: NotRequired[list[int] | None]
+    # Note-specific
+    note_id: NotRequired[int | None]
+    is_pinned: NotRequired[bool | None]
     # Journal-specific
-    date: str | None
-    character_id: int | None
-    # Family-specific
-    is_extinct: bool | None
-    # Item-specific
-    creator_id: int | None
-    price: str | None
-    size: str | None
-    weight: str | None
-    # Tag-specific
-    colour: str | None
+    journal_id: NotRequired[int | None]
+    date: NotRequired[str | None]
+    character_id: NotRequired[int | None]
     # Quest-specific
-    is_completed: bool | None
+    quest_id: NotRequired[int | None]
+    # Ability-specific
+    ability_id: NotRequired[int | None]
+    charges: NotRequired[int | None]
+    # Organisation-specific
+    organisation_id: NotRequired[int | None]
+    is_defunct: NotRequired[bool | None]
     # Map-specific
-    center_marker_id: int | None
-    center_x: float | None
-    center_y: float | None
-    is_real: bool | None
-    # Event-specific
-    calendar_id: int | None
-    calendar_year: int | None
-    calendar_month: int | None
-    calendar_day: int | None
-    # Image fields
-    image_uuid: str | None
-    header_uuid: str | None
+    map_id: NotRequired[int | None]
+    is_real: NotRequired[bool | None]
 
 
 class UpdateEntitiesParams(TypedDict):
@@ -168,10 +175,13 @@ class GetEntitiesParams(TypedDict):
     include_posts: bool | None
 
 
-class DeleteEntitiesParams(TypedDict):
+class DeleteEntitiesParams(TypedDict, total=False):
     """Parameters for delete_entities tool."""
 
     entity_ids: list[int]
+    batch_size: int | None  # max concurrent deletes per wave; clamped 1–15, default 12
+    delay_ms: int | None  # pause between waves (ms); default 500, clamped 0–60000
+    dry_run: bool | None  # if true, show what would be deleted without deleting
 
 
 class PostInput(TypedDict):
@@ -194,7 +204,7 @@ class PostUpdate(TypedDict):
 
     entity_id: int
     post_id: int
-    name: str
+    name: str | None
     entry: str | None
     is_hidden: bool | None
 
@@ -241,49 +251,12 @@ class EntityFull(TypedDict, total=False):
     created_at: str  # ISO 8601 timestamp
     updated_at: str  # ISO 8601 timestamp
     match_score: float | None  # Only when name_fuzzy=true
-    # Nesting
-    parent_id: int | None
-    # Character-specific
-    location_id: int | None
-    title: str | None
-    age: str | None
-    sex: str | None
-    pronouns: str | None
-    is_dead: bool | None
-    races: list[int] | None
-    families: list[int] | None
-    # Organisation-specific
-    is_defunct: bool | None
-    # Journal-specific
-    date: str | None
-    character_id: int | None
-    # Family-specific
-    is_extinct: bool | None
-    # Item-specific
-    creator_id: int | None
-    price: str | None
-    size: str | None
-    weight: str | None
-    # Tag-specific
-    colour: str | None
-    # Quest-specific
-    is_completed: bool | None
-    # Map-specific
-    center_marker_id: int | None
-    center_x: float | None
-    center_y: float | None
-    is_real: bool | None
-    # Event-specific (date shared with journal)
-    calendar_id: int | None
-    calendar_year: int | None
-    calendar_month: int | None
-    calendar_day: int | None
-    # Image fields
-    image: str | None
-    image_full: str | None
-    image_thumb: str | None
-    image_uuid: str | None
-    header_uuid: str | None
+    is_completed: bool | None  # For quests only
+    image: str | None  # Local path to the picture
+    image_full: str | None  # URL to the full picture
+    image_thumb: str | None  # URL to the thumbnail
+    image_uuid: str | None  # Image gallery UUID
+    header_uuid: str | None  # Header image gallery UUID
 
 
 class PostData(TypedDict):
@@ -308,6 +281,7 @@ class SyncInfo(TypedDict):
     request_timestamp: str  # When this request was made
     newest_updated_at: str | None  # Latest updated_at from returned entities
     total_count: int  # Total matching entities (for pagination)
+    last_page: int  # Last page number for pagination
     returned_count: int  # Number returned in this response
 
 
@@ -353,49 +327,12 @@ class GetEntityResult(TypedDict, total=False):
     posts: list[PostData] | None
     success: bool
     error: str | None
-    # Nesting
-    parent_id: int | None
-    # Character-specific
-    location_id: int | None
-    title: str | None
-    age: str | None
-    sex: str | None
-    pronouns: str | None
-    is_dead: bool | None
-    races: list[int] | None
-    families: list[int] | None
-    # Organisation-specific
-    is_defunct: bool | None
-    # Journal-specific
-    date: str | None
-    character_id: int | None
-    # Family-specific
-    is_extinct: bool | None
-    # Item-specific
-    creator_id: int | None
-    price: str | None
-    size: str | None
-    weight: str | None
-    # Tag-specific
-    colour: str | None
-    # Quest-specific
-    is_completed: bool | None
-    # Map-specific
-    center_marker_id: int | None
-    center_x: float | None
-    center_y: float | None
-    is_real: bool | None
-    # Event-specific
-    calendar_id: int | None
-    calendar_year: int | None
-    calendar_month: int | None
-    calendar_day: int | None
-    # Image fields
-    image: str | None
-    image_full: str | None
-    image_thumb: str | None
-    image_uuid: str | None
-    header_uuid: str | None
+    is_completed: bool | None  # For quests only
+    image: str | None  # Local path to the picture
+    image_full: str | None  # URL to the full picture
+    image_thumb: str | None  # URL to the thumbnail
+    image_uuid: str | None  # Image gallery UUID
+    header_uuid: str | None  # Header image gallery UUID
 
 
 class DeleteEntityResult(TypedDict):
@@ -404,6 +341,8 @@ class DeleteEntityResult(TypedDict):
     entity_id: int
     success: bool
     error: str | None
+    warning: NotRequired[str]
+    dry_run: NotRequired[bool]
 
 
 class CreatePostResult(TypedDict):
@@ -485,366 +424,3 @@ class CheckEntityUpdatesResult(TypedDict):
     modified_entity_ids: list[int]
     deleted_entity_ids: list[int]  # If API provides this
     check_timestamp: str  # ISO 8601 timestamp
-
-
-# --- Sub-resource types: Relations ---
-
-ActionType = Literal["create", "update", "delete", "list"]
-
-
-class RelationAction(TypedDict, total=False):
-    """A single relation action."""
-
-    action: ActionType  # required
-    entity_id: int  # required
-    relation_id: int | None
-    target_id: int | None
-    relation: str | None
-    attitude: int | None
-    two_way: bool | None
-    colour: str | None
-    is_pinned: bool | None
-    is_hidden: bool | None
-
-
-class RelationData(TypedDict, total=False):
-    """Relation data returned from API."""
-
-    id: int
-    owner_id: int
-    target_id: int
-    relation: str
-    attitude: int | None
-    is_pinned: bool
-    is_hidden: bool
-    colour: str | None
-
-
-class RelationActionResult(TypedDict, total=False):
-    """Result of a single relation action."""
-
-    action: str
-    entity_id: int
-    relation_id: int | None
-    success: bool
-    error: str | None
-    relation: RelationData | None
-    relations: list[RelationData] | None
-
-
-# --- Sub-resource types: Attributes ---
-
-
-class AttributeAction(TypedDict, total=False):
-    """A single attribute action."""
-
-    action: ActionType  # required (create/update/delete/list) plus "bulk_patch"
-    entity_id: int  # required
-    attribute_id: int | None
-    name: str | None
-    value: str | None
-    type_id: int | None
-    is_pinned: bool | None
-    is_hidden: bool | None
-    api_key: str | None
-    default_order: int | None
-    # For bulk_patch: array of attribute dicts
-    attributes: list[dict[str, Any]] | None
-
-
-class AttributeData(TypedDict, total=False):
-    """Attribute data returned from API."""
-
-    id: int
-    entity_id: int
-    name: str
-    value: str | None
-    type_id: int
-    is_pinned: bool
-    is_hidden: bool
-    api_key: str | None
-    default_order: int
-    parsed: str | None
-
-
-class AttributeActionResult(TypedDict, total=False):
-    """Result of a single attribute action."""
-
-    action: str
-    entity_id: int
-    attribute_id: int | None
-    success: bool
-    error: str | None
-    attribute: AttributeData | None
-    attributes: list[AttributeData] | None
-
-
-# --- Sub-resource types: Organisation Members ---
-
-
-class OrgMemberAction(TypedDict, total=False):
-    """A single organisation member action."""
-
-    action: ActionType  # required
-    organisation_id: int  # required (entity_id of the org)
-    member_id: int | None
-    character_id: int | None
-    role: str | None
-    is_hidden: bool | None
-    status_id: int | None
-    parent_id: int | None
-    pin_id: int | None
-
-
-class OrgMemberData(TypedDict, total=False):
-    """Organisation member data returned from API."""
-
-    id: int
-    character_id: int
-    organisation_id: int
-    role: str | None
-    is_hidden: bool
-    status_id: int | None
-    pin_id: int | None
-    parent_id: int | None
-
-
-class OrgMemberActionResult(TypedDict, total=False):
-    """Result of a single org member action."""
-
-    action: str
-    organisation_id: int
-    member_id: int | None
-    success: bool
-    error: str | None
-    member: OrgMemberData | None
-    members: list[OrgMemberData] | None
-
-
-# --- Sub-resource types: Map Markers ---
-
-
-class MapMarkerAction(TypedDict, total=False):
-    """A single map marker action."""
-
-    action: ActionType  # required
-    map_id: int  # required
-    marker_id: int | None
-    name: str | None
-    entity_id: int | None
-    latitude: float | None
-    longitude: float | None
-    shape_id: int | None
-    icon: str | None
-    size_id: int | None
-    custom_icon: str | None
-    is_draggable: bool | None
-    pin_size: str | None
-    entry: str | None
-    type_id: int | None
-    group_id: int | None
-    is_hidden: bool | None
-
-
-class MapMarkerData(TypedDict, total=False):
-    """Map marker data returned from API."""
-
-    id: int
-    map_id: int
-    name: str | None
-    entity_id: int | None
-    latitude: float | None
-    longitude: float | None
-    shape_id: int | None
-    icon: str | None
-    size_id: int | None
-    custom_icon: str | None
-    is_draggable: bool
-    pin_size: str | None
-    entry: str | None
-    type_id: int | None
-    group_id: int | None
-    visibility_id: int | None
-
-
-class MapMarkerActionResult(TypedDict, total=False):
-    """Result of a single map marker action."""
-
-    action: str
-    map_id: int
-    marker_id: int | None
-    success: bool
-    error: str | None
-    marker: MapMarkerData | None
-    markers: list[MapMarkerData] | None
-
-
-# --- Sub-resource types: Map Groups ---
-
-
-class MapGroupAction(TypedDict, total=False):
-    """A single map group action."""
-
-    action: ActionType  # required
-    map_id: int  # required
-    group_id: int | None
-    name: str | None
-    parent_id: int | None
-    is_shown: bool | None
-    position: str | None
-    visibility_id: int | None
-    is_hidden: bool | None
-
-
-class MapGroupData(TypedDict, total=False):
-    """Map group data returned from API."""
-
-    id: int
-    map_id: int
-    name: str
-    parent_id: int | None
-    is_shown: bool
-    position: str | None
-    visibility_id: int | None
-
-
-class MapGroupActionResult(TypedDict, total=False):
-    """Result of a single map group action."""
-
-    action: str
-    map_id: int
-    group_id: int | None
-    success: bool
-    error: str | None
-    group: MapGroupData | None
-    groups: list[MapGroupData] | None
-
-
-# --- Sub-resource types: Map Layers ---
-
-
-class MapLayerAction(TypedDict, total=False):
-    """A single map layer action."""
-
-    action: ActionType  # required
-    map_id: int  # required
-    layer_id: int | None
-    name: str | None
-    image_url: str | None
-    entry: str | None
-    type_id: int | None
-    position: str | None
-    visibility_id: int | None
-    is_hidden: bool | None
-
-
-class MapLayerData(TypedDict, total=False):
-    """Map layer data returned from API."""
-
-    id: int
-    map_id: int
-    name: str
-    image_url: str | None
-    entry: str | None
-    type_id: int | None
-    position: str | None
-    visibility_id: int | None
-
-
-class MapLayerActionResult(TypedDict, total=False):
-    """Result of a single map layer action."""
-
-    action: str
-    map_id: int
-    layer_id: int | None
-    success: bool
-    error: str | None
-    layer: MapLayerData | None
-    layers: list[MapLayerData] | None
-
-
-# --- Sub-resource types: Timeline Eras ---
-
-
-class TimelineEraAction(TypedDict, total=False):
-    """A single timeline era action."""
-
-    action: ActionType  # required
-    timeline_id: int  # required
-    era_id: int | None
-    name: str | None
-    abbreviation: str | None
-    start_year: int | None
-    end_year: int | None
-    visibility: str | None
-
-
-class TimelineEraData(TypedDict, total=False):
-    """Timeline era data from API."""
-
-    id: int
-    timeline_id: int
-    name: str
-    abbreviation: str | None
-    start_year: int | None
-    end_year: int | None
-    position: int | None
-    elements: list[Any]
-
-
-class TimelineEraActionResult(TypedDict, total=False):
-    """Result of a timeline era action."""
-
-    action: str
-    timeline_id: int
-    era_id: int | None
-    success: bool
-    error: str | None
-    era: TimelineEraData | None
-    eras: list[TimelineEraData] | None
-
-
-# --- Sub-resource types: Timeline Elements ---
-
-
-class TimelineElementAction(TypedDict, total=False):
-    """A single timeline element action."""
-
-    action: ActionType  # required
-    timeline_id: int  # required
-    element_id: int | None
-    era_id: int  # required for create
-    name: str | None
-    entity_id: int | None
-    entry: str | None
-    date: str | None
-    colour: str | None
-    position: int | None
-    is_hidden: bool | None
-
-
-class TimelineElementData(TypedDict, total=False):
-    """Timeline element data from API."""
-
-    id: int
-    timeline_id: int
-    era_id: int
-    name: str
-    entity_id: int | None
-    entry: str | None
-    date: str | None
-    colour: str | None
-    position: int | None
-    visibility_id: int | None
-
-
-class TimelineElementActionResult(TypedDict, total=False):
-    """Result of a timeline element action."""
-
-    action: str
-    timeline_id: int
-    element_id: int | None
-    success: bool
-    error: str | None
-    element: TimelineElementData | None
-    elements: list[TimelineElementData] | None

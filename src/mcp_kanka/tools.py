@@ -120,10 +120,15 @@ async def handle_delete_entities(**params: Any) -> list[DeleteEntityResult]:
         List of deletion results
     """
     entity_ids = params.get("entity_ids", [])
+    batch_size = params.get("batch_size")
+    delay_ms = params.get("delay_ms")
+    dry_run = params.get("dry_run", False)
     operations = get_operations()
 
     # Delegate to operations layer
-    return await operations.delete_entities(entity_ids)
+    return await operations.delete_entities(
+        entity_ids, batch_size=batch_size, delay_ms=delay_ms, dry_run=dry_run
+    )
 
 
 async def handle_create_posts(**params: Any) -> list[CreatePostResult]:
@@ -226,6 +231,12 @@ async def handle_manage_timeline_elements(**params: Any) -> dict[str, Any]:
     return await operations.manage_timeline_elements(**params)
 
 
+async def handle_manage_timeline_eras(**params: Any) -> dict[str, Any]:
+    """Manage timeline eras for a timeline (list/create/update/delete)."""
+    operations = get_operations()
+    return await operations.manage_timeline_eras(**params)
+
+
 async def handle_manage_attributes(**params: Any) -> dict[str, Any]:
     """Manage entity attributes (properties) (list/create/update/delete)."""
     operations = get_operations()
@@ -266,6 +277,18 @@ async def handle_manage_calendar_weather(**params: Any) -> dict[str, Any]:
     """Manage calendar weather effects (list/create/update/delete)."""
     operations = get_operations()
     return await operations.manage_calendar_weather(**params)
+
+
+async def handle_manage_calendars(**params: Any) -> dict[str, Any]:
+    """Manage calendars (list/create/update/delete)."""
+    operations = get_operations()
+    return await operations.manage_calendars(**params)
+
+
+async def handle_manage_calendar_events(**params: Any) -> dict[str, Any]:
+    """Manage calendar events/reminders (list/create/update/delete)."""
+    operations = get_operations()
+    return await operations.manage_calendar_events(**params)
 
 
 async def handle_calendar_advance_date(**params: Any) -> dict[str, Any]:

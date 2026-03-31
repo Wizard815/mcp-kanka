@@ -370,9 +370,38 @@ class KankaOperations:
                     tags=entity_input.get("tags"),
                     is_hidden=entity_input.get("is_hidden"),
                     location_id=entity_input.get("location_id"),
+                    parent_location_id=entity_input.get("parent_location_id"),
+                    title=entity_input.get("title"),
+                    age=entity_input.get("age"),
+                    sex=entity_input.get("sex"),
+                    pronouns=entity_input.get("pronouns"),
+                    race_id=entity_input.get("race_id"),
+                    family_id=entity_input.get("family_id"),
+                    is_dead=entity_input.get("is_dead"),
+                    is_map_private=entity_input.get("is_map_private"),
+                    creature_id=entity_input.get("creature_id"),
+                    is_extinct=entity_input.get("is_extinct"),
+                    locations=entity_input.get("locations"),
+                    note_id=entity_input.get("note_id"),
+                    is_pinned=entity_input.get("is_pinned"),
+                    journal_id=entity_input.get("journal_id"),
+                    date=entity_input.get("date"),
+                    character_id=entity_input.get("character_id"),
+                    quest_id=entity_input.get("quest_id"),
+                    ability_id=entity_input.get("ability_id"),
+                    charges=entity_input.get("charges"),
+                    organisation_id=entity_input.get("organisation_id"),
+                    is_defunct=entity_input.get("is_defunct"),
+                    map_id=entity_input.get("map_id"),
+                    is_real=entity_input.get("is_real"),
                     is_completed=entity_input.get("is_completed"),
                     image_uuid=entity_input.get("image_uuid"),
                     header_uuid=entity_input.get("header_uuid"),
+                    calendar_id=entity_input.get("calendar_id"),
+                    calendar_year=entity_input.get("calendar_year"),
+                    calendar_month=entity_input.get("calendar_month"),
+                    calendar_day=entity_input.get("calendar_day"),
+                    event_parent_id=entity_input.get("event_parent_id"),
                 )
 
                 result: CreateEntityResult = {
@@ -437,9 +466,36 @@ class KankaOperations:
                     tags=update.get("tags"),
                     is_hidden=update.get("is_hidden"),
                     location_id=update.get("location_id"),
+                    parent_location_id=update.get("parent_location_id"),
+                    title=update.get("title"),
+                    age=update.get("age"),
+                    sex=update.get("sex"),
+                    pronouns=update.get("pronouns"),
+                    race_id=update.get("race_id"),
+                    family_id=update.get("family_id"),
+                    is_dead=update.get("is_dead"),
+                    is_map_private=update.get("is_map_private"),
+                    creature_id=update.get("creature_id"),
+                    is_extinct=update.get("is_extinct"),
+                    locations=update.get("locations"),
+                    note_id=update.get("note_id"),
+                    is_pinned=update.get("is_pinned"),
+                    journal_id=update.get("journal_id"),
+                    date=update.get("date"),
+                    character_id=update.get("character_id"),
+                    quest_id=update.get("quest_id"),
+                    ability_id=update.get("ability_id"),
+                    charges=update.get("charges"),
+                    organisation_id=update.get("organisation_id"),
+                    is_defunct=update.get("is_defunct"),
+                    map_id=update.get("map_id"),
+                    is_real=update.get("is_real"),
                     is_completed=update.get("is_completed"),
                     image_uuid=update.get("image_uuid"),
                     header_uuid=update.get("header_uuid"),
+                    event_parent_id=update.get("event_parent_id"),
+                    calendar_id=update.get("calendar_id"),
+                    calendar_id_set=("calendar_id" in update),
                 )
 
                 result: UpdateEntityResult = {
@@ -472,92 +528,204 @@ class KankaOperations:
         Returns:
             List of results, one per entity
         """
-        results = []
-        for entity_id in entity_ids:
+        per_entity_timeout_s = 15.0
+        bulk_by_id: dict[int, dict[str, Any]] = {}
+
+        # Fast path for multi-id fetches to reduce sequential round-trip costs.
+        if len(entity_ids) > 1:
             try:
-                # Get entity
-                entity = self.service.get_entity_by_id(entity_id, include_posts)
+                bulk_result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.service.get_entities_bulk, entity_ids, include_posts
+                    ),
+                    timeout=per_entity_timeout_s,
+                )
+                bulk_by_id = bulk_result if isinstance(bulk_result, dict) else {}
+            except Exception as e:
+                logger.warning("Bulk get_entities fallback failed: %s", e)
+                bulk_by_id = {}
 
-                if entity:
-                    result: GetEntityResult = {
-                        "id": entity["id"],
-                        "entity_id": entity["entity_id"],
-                        "name": entity["name"],
-                        "entity_type": entity["entity_type"],
-                        "type": entity.get("type"),
-                        "entry": entity.get("entry"),
-                        "tags": entity.get("tags", []),
-                        "is_hidden": entity.get("is_hidden", False),
-                        "created_at": entity.get("created_at"),
-                        "updated_at": entity.get("updated_at"),
-                        "success": True,
-                        "error": None,
-                    }
-
-                    # Add quest-specific fields
-                    if entity.get("entity_type") == "quest":
-                        result["is_completed"] = entity.get("is_completed")
-
-                    # Add all image fields (they should always be present from service layer)
-                    result["image"] = entity.get("image")
-                    result["image_full"] = entity.get("image_full")
-                    result["image_thumb"] = entity.get("image_thumb")
-                    result["image_uuid"] = entity.get("image_uuid")
-                    result["header_uuid"] = entity.get("header_uuid")
-
-                    if include_posts:
-                        result["posts"] = entity.get("posts", [])
-
-                    results.append(result)
-                else:
-                    not_found_result: GetEntityResult = {
-                        "entity_id": entity_id,
-                        "success": False,
-                        "error": f"Entity {entity_id} not found",
-                    }
-                    results.append(not_found_result)
-
+        async def fetch_one(
+            entity_id: int,
+        ) -> tuple[int, dict[str, Any] | None, str | None]:
+            if entity_id in bulk_by_id:
+                return (entity_id, bulk_by_id[entity_id], None)
+            try:
+                entity = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.service.get_entity_by_id, entity_id, include_posts
+                    ),
+                    timeout=per_entity_timeout_s,
+                )
+                return (entity_id, entity, None)
+            except TimeoutError:
+                return (
+                    entity_id,
+                    None,
+                    f"Timed out after {int(per_entity_timeout_s)}s while fetching entity {entity_id}",
+                )
             except Exception as e:
                 logger.error(f"Failed to get entity {entity_id}: {e}")
-                error_result: GetEntityResult = {
-                    "entity_id": entity_id,
-                    "success": False,
-                    "error": str(e),
+                return (entity_id, None, str(e))
+
+        fetched = await asyncio.gather(*(fetch_one(eid) for eid in entity_ids))
+        results: list[GetEntityResult] = []
+        for entity_id, entity, fetch_error in fetched:
+            if fetch_error is not None:
+                results.append(
+                    {"entity_id": entity_id, "success": False, "error": fetch_error}
+                )
+                continue
+
+            if entity:
+                result: GetEntityResult = {
+                    "id": entity["id"],
+                    "entity_id": entity["entity_id"],
+                    "name": entity["name"],
+                    "entity_type": entity["entity_type"],
+                    "type": entity.get("type"),
+                    "entry": entity.get("entry"),
+                    "tags": entity.get("tags", []),
+                    "is_hidden": entity.get("is_hidden", False),
+                    "created_at": entity.get("created_at"),
+                    "updated_at": entity.get("updated_at"),
+                    "success": True,
+                    "error": None,
                 }
-                results.append(error_result)
+
+                if entity.get("entity_type") == "quest":
+                    result["is_completed"] = entity.get("is_completed")
+
+                result["image"] = entity.get("image")
+                result["image_full"] = entity.get("image_full")
+                result["image_thumb"] = entity.get("image_thumb")
+                result["image_uuid"] = entity.get("image_uuid")
+                result["header_uuid"] = entity.get("header_uuid")
+
+                if include_posts:
+                    result["posts"] = entity.get("posts", [])
+
+                results.append(result)
+            else:
+                results.append(
+                    {
+                        "entity_id": entity_id,
+                        "success": False,
+                        "error": (
+                            f"Entity {entity_id} not found. Expected MCP entity_id (global /entities id), "
+                            "not a module child id from URLs like /timelines/{id} or /calendars/{id}. "
+                            "Resolve ids with `find_entities` or `search_entities` first."
+                        ),
+                    }
+                )
 
         return results
 
-    async def delete_entities(self, entity_ids: list[int]) -> list[DeleteEntityResult]:
-        """Delete one or more entities.
+    @staticmethod
+    def _clamp_delete_batch_size(batch_size: int | None) -> int:
+        """Cap concurrent delete waves at 1–15 (default 12) to avoid long sequential chains."""
+        if batch_size is None:
+            return 12
+        try:
+            b = int(batch_size)
+        except (TypeError, ValueError):
+            return 12
+        return max(1, min(15, b))
+
+    @staticmethod
+    def _clamp_delete_delay_ms(delay_ms: int | None) -> int:
+        """Pause between waves in ms (default 500, max 60000)."""
+        if delay_ms is None:
+            return 500
+        try:
+            d = int(delay_ms)
+        except (TypeError, ValueError):
+            return 500
+        return max(0, min(60000, d))
+
+    async def delete_entities(
+        self,
+        entity_ids: list[int],
+        batch_size: int | None = None,
+        delay_ms: int | None = None,
+        dry_run: bool | None = None,
+    ) -> list[DeleteEntityResult]:
+        """Delete one or more entities in bounded concurrent waves.
+
+        Large ID lists are split into waves of at most ``batch_size`` (default 12,
+        max 15). Within each wave, deletes run concurrently to reduce wall-clock time
+        and MCP timeouts from a single long sequential chain. Between waves, an
+        optional delay reduces API rate-limit pressure.
 
         Args:
             entity_ids: List of entity IDs to delete
+            batch_size: Max deletes per wave (1–15; default 12)
+            delay_ms: Milliseconds to wait after each wave except the last (0–60000; default 500)
+            dry_run: If true, only report what would be deleted without deleting
 
         Returns:
-            List of results, one per entity
+            List of results, one per entity (same order as ``entity_ids``)
         """
-        results = []
-        for entity_id in entity_ids:
-            try:
-                # Delete entity
-                success = self.service.delete_entity(entity_id)
+        bs = self._clamp_delete_batch_size(batch_size)
+        pause_ms = self._clamp_delete_delay_ms(delay_ms)
+        is_dry_run = bool(dry_run)
+        results: list[DeleteEntityResult] = []
+        warning_text = (
+            "Event entity has calendar_id set — deleting will orphan its calendar reminder "
+            "which cannot be deleted via API. Set calendar_id to null first via "
+            "update_entities, then delete."
+        )
 
+        async def _delete_one(entity_id: int) -> DeleteEntityResult:
+            try:
+                warning: str | None = None
+                entity_data = await asyncio.to_thread(self.service.get_entity_by_id, entity_id)
+                if (
+                    isinstance(entity_data, dict)
+                    and entity_data.get("entity_type") == "event"
+                    and entity_data.get("calendar_id") is not None
+                ):
+                    warning = warning_text
+
+                if is_dry_run:
+                    result: DeleteEntityResult = {
+                        "entity_id": entity_id,
+                        "success": True,
+                        "error": None,
+                        "dry_run": True,
+                    }
+                    if warning:
+                        result["warning"] = warning
+                    return result
+
+                success = await asyncio.to_thread(
+                    self.service.delete_entity, entity_id
+                )
                 result: DeleteEntityResult = {
                     "entity_id": entity_id,
                     "success": success,
                     "error": None,
                 }
-                results.append(result)
-
+                if warning:
+                    result["warning"] = warning
+                return result
             except Exception as e:
                 logger.error(f"Failed to delete entity {entity_id}: {e}")
-                error_result: DeleteEntityResult = {
+                return {
                     "entity_id": entity_id,
                     "success": False,
                     "error": str(e),
                 }
-                results.append(error_result)
+
+        wave_index = 0
+        total_waves = (len(entity_ids) + bs - 1) // bs if entity_ids else 0
+        for i in range(0, len(entity_ids), bs):
+            chunk = entity_ids[i : i + bs]
+            wave = await asyncio.gather(*(_delete_one(eid) for eid in chunk))
+            results.extend(wave)
+            wave_index += 1
+            if pause_ms > 0 and wave_index < total_waves:
+                await asyncio.sleep(pause_ms / 1000.0)
 
         return results
 
@@ -856,6 +1024,7 @@ class KankaOperations:
         element_id: int | None = None,
         page: int = 1,
         limit: int = 15,
+        fetch_all: bool = False,
         **fields: Any,
     ) -> dict[str, Any]:
         """Manage timeline elements for a timeline (list/create/update/delete)."""
@@ -875,13 +1044,19 @@ class KankaOperations:
         provided_fields = {k: v for k, v in fields.items() if k in element_fields}
 
         if action == "list":
+            if fetch_all:
+                return self.service.list_timeline_elements_all(
+                    timeline_id=timeline_id, limit=limit
+                )
             return self.service.list_timeline_elements(
                 timeline_id=timeline_id, page=page, limit=limit
             )
 
         if action == "create":
             if "era_id" not in provided_fields:
-                raise ValueError("Missing required create field: era_id")
+                raise ValueError(
+                    "Missing required create field: era_id. Use `action=list` first to inspect timeline eras and select a valid era_id."
+                )
 
             if "name" not in provided_fields and "entity_id" not in provided_fields:
                 raise ValueError(
@@ -914,6 +1089,61 @@ class KankaOperations:
                 raise ValueError("`element_id` is required for delete.")
             return self.service.delete_timeline_element(
                 timeline_id=timeline_id, element_id=element_id
+            )
+
+        raise ValueError(f"Unknown action: {action}")
+
+    async def manage_timeline_eras(
+        self,
+        action: str,
+        timeline_id: int,
+        era_id: int | None = None,
+        page: int = 1,
+        limit: int = 15,
+        **fields: Any,
+    ) -> dict[str, Any]:
+        """Manage timeline eras for a timeline (list/create/update/delete)."""
+        action = action.lower()
+        era_fields = {
+            "name",
+            "abbreviation",
+            "start_year",
+            "end_year",
+            "position",
+            "is_collapsed",
+        }
+        provided_fields = {
+            k: v for k, v in fields.items() if k in era_fields and v is not None
+        }
+
+        if action == "list":
+            return self.service.list_timeline_eras(
+                timeline_id=timeline_id, page=page, limit=limit
+            )
+
+        if action == "create":
+            if "name" not in provided_fields:
+                raise ValueError("Missing required create field: name")
+            return self.service.create_timeline_era(
+                timeline_id=timeline_id, payload=dict(provided_fields)
+            )
+
+        if action == "update":
+            if era_id is None:
+                raise ValueError("`era_id` is required for update.")
+            if not provided_fields:
+                raise ValueError("No update fields provided.")
+            return self.service.update_timeline_era(
+                timeline_id=timeline_id,
+                era_id=era_id,
+                payload=dict(provided_fields),
+            )
+
+        if action == "delete":
+            if era_id is None:
+                raise ValueError("`era_id` is required for delete.")
+            return self.service.delete_timeline_era(
+                timeline_id=timeline_id, era_id=era_id
             )
 
         raise ValueError(f"Unknown action: {action}")
@@ -1284,6 +1514,136 @@ class KankaOperations:
 
         raise ValueError(f"Unknown action: {action}")
 
+    async def manage_calendars(
+        self,
+        action: str,
+        calendar_id: int | None = None,
+        page: int = 1,
+        limit: int = 15,
+        **fields: Any,
+    ) -> dict[str, Any]:
+        """Manage calendars (list/create/update/delete)."""
+        action = action.lower()
+
+        calendar_fields = {
+            "name",
+            "month_name",
+            "month_length",
+            "weekday",
+            "suffix",
+            "current_year",
+            "current_month",
+            "current_day",
+            "has_leap_year",
+            "skip_year_zero",
+            "format",
+        }
+        provided_fields = {
+            k: v for k, v in fields.items() if k in calendar_fields and v is not None
+        }
+
+        if action == "list":
+            return self.service.list_calendars(page=page, limit=limit)
+
+        if action == "create":
+            if "name" not in provided_fields:
+                raise ValueError("Missing required create field: name")
+            return self.service.create_calendar(payload=dict(provided_fields))
+
+        if action == "update":
+            if calendar_id is None:
+                raise ValueError("`calendar_id` is required for update.")
+            if not provided_fields:
+                raise ValueError("No update fields provided.")
+            return self.service.update_calendar(
+                calendar_id=calendar_id,
+                payload=dict(provided_fields),
+            )
+
+        if action == "delete":
+            if calendar_id is None:
+                raise ValueError("`calendar_id` is required for delete.")
+            return self.service.delete_calendar(calendar_id=calendar_id)
+
+        raise ValueError(f"Unknown action: {action}")
+
+    async def manage_calendar_events(
+        self,
+        action: str,
+        calendar_id: int,
+        calendar_event_id: int | None = None,
+        entity_id: int | None = None,
+        page: int = 1,
+        limit: int = 15,
+        fetch_all: bool = False,
+        **fields: Any,
+    ) -> dict[str, Any]:
+        """Manage calendar reminders (list/create/update/delete)."""
+        action = action.lower()
+        reminder_fields = {
+            "name",
+            "day",
+            "month",
+            "year",
+            "length",
+            "calendar_id",
+            "colour",
+            "comment",
+            "is_recurring",
+            "recurring_periodicity",
+            "recurring_until",
+            "type_id",
+            "visibility_id",
+        }
+        provided_fields = {
+            k: v for k, v in fields.items() if k in reminder_fields and v is not None
+        }
+
+        if action == "list":
+            if fetch_all:
+                return self.service.list_calendar_events_all(
+                    calendar_id=calendar_id, limit=limit
+                )
+            return self.service.list_calendar_events(
+                calendar_id=calendar_id, page=page, limit=limit
+            )
+
+        if entity_id is None:
+            raise ValueError("`entity_id` is required for create/update/delete.")
+
+        if action == "create":
+            # Keep backward compatibility: top-level calendar_id can satisfy required payload field.
+            provided_fields.setdefault("calendar_id", calendar_id)
+            required_create = {"name", "day", "month", "year", "length", "calendar_id"}
+            missing = [k for k in required_create if k not in provided_fields]
+            if missing:
+                raise ValueError(
+                    f"Missing required create fields: {', '.join(missing)}"
+                )
+            return self.service.create_entity_reminder(
+                entity_id=entity_id, payload=dict(provided_fields)
+            )
+
+        if action == "update":
+            if calendar_event_id is None:
+                raise ValueError("`calendar_event_id` is required for update.")
+            if not provided_fields:
+                raise ValueError("No update fields provided.")
+            return self.service.update_entity_reminder(
+                entity_id=entity_id,
+                reminder_id=calendar_event_id,
+                payload=dict(provided_fields),
+            )
+
+        if action == "delete":
+            if calendar_event_id is None:
+                raise ValueError("`calendar_event_id` is required for delete.")
+            return self.service.delete_entity_reminder(
+                entity_id=entity_id, reminder_id=calendar_event_id
+            )
+
+        raise ValueError(f"Unknown action: {action}")
+
     async def calendar_advance_date(self, calendar_id: int) -> dict[str, Any]:
         """Advance the calendar date by one day."""
         return self.service.calendar_advance_date(calendar_id=calendar_id)
@@ -1358,8 +1718,12 @@ class KankaOperations:
     _MIGRATION_ALLOWED_OPS = frozenset(
         {
             "update_map_marker",
+            "update_calendar_event",
+            "create_reminder",
             "delete_entity",
             "update_entity",
+            "create_entity",
+            "create_post",
             "remove_entity_tags_by_tag_id",
             "sleep_ms",
         }
@@ -1379,8 +1743,12 @@ class KankaOperations:
         Step shapes::
 
             {"op": "update_map_marker", "map_id": int, "marker_id": int, "fields": {...}}
+            {"op": "update_calendar_event", "calendar_id": int, "calendar_event_id": int, "fields": {...}}
+            {"op": "create_reminder", "entity_id": int, "fields": {...}}
             {"op": "delete_entity", "entity_id": int}
             {"op": "update_entity", "entity_id": int, "fields": {"location_id": ..., "name": ..., ...}}
+            {"op": "create_entity", "fields": {"entity_type": str, "name": str, ...}}
+            {"op": "create_post", "fields": {"entity_id": int, "name": str, ...}}
             {"op": "remove_entity_tags_by_tag_id", "entity_id": int, "tag_id": int}
             {"op": "sleep_ms", "ms": int}
 
@@ -1412,7 +1780,10 @@ class KankaOperations:
                     "step": i,
                     "op": op or None,
                     "success": False,
-                    "error": f"unknown or disallowed op (allowed: {sorted(self._MIGRATION_ALLOWED_OPS)})",
+                    "error": (
+                        f"unknown or disallowed op (allowed: {sorted(self._MIGRATION_ALLOWED_OPS)}). "
+                        "For create workflows, use `create_entity` or `create_post`."
+                    ),
                 }
                 results.append(err)
                 if stop_on_error:
@@ -1439,6 +1810,60 @@ class KankaOperations:
                     results.append(
                         {"step": i, "op": op, "success": True, "data": data}
                     )
+                elif op == "update_calendar_event":
+                    calendar_id = int(step["calendar_id"])
+                    calendar_event_id = int(step["calendar_event_id"])
+                    fields = step.get("fields")
+                    if not isinstance(fields, dict):
+                        raise ValueError(
+                            "`fields` must be an object for update_calendar_event"
+                        )
+                    data = self.service.update_calendar_event(
+                        calendar_id=calendar_id,
+                        calendar_event_id=calendar_event_id,
+                        payload=fields,
+                    )
+                    results.append(
+                        {"step": i, "op": op, "success": True, "data": data}
+                    )
+                elif op == "create_reminder":
+                    entity_id = int(step["entity_id"])
+                    fields = step.get("fields")
+                    if not isinstance(fields, dict):
+                        raise ValueError("`fields` must be an object for create_reminder")
+                    required = {"name", "day", "month", "year", "length", "calendar_id"}
+                    missing = [k for k in required if k not in fields]
+                    if missing:
+                        raise ValueError(
+                            f"create_reminder missing required fields: {', '.join(missing)}"
+                        )
+                    payload = {
+                        k: v
+                        for k, v in fields.items()
+                        if k
+                        in {
+                            "name",
+                            "day",
+                            "month",
+                            "year",
+                            "length",
+                            "calendar_id",
+                            "colour",
+                            "comment",
+                            "is_recurring",
+                            "recurring_periodicity",
+                            "recurring_until",
+                            "type_id",
+                            "visibility_id",
+                        }
+                        and v is not None
+                    }
+                    data = self.service.create_entity_reminder(
+                        entity_id=entity_id, payload=payload
+                    )
+                    results.append(
+                        {"step": i, "op": op, "success": True, "data": data}
+                    )
                 elif op == "delete_entity":
                     entity_id = int(step["entity_id"])
                     ok = self.service.delete_entity(entity_id)
@@ -1458,9 +1883,36 @@ class KankaOperations:
                         tags=fields.get("tags"),
                         is_hidden=fields.get("is_hidden"),
                         location_id=fields.get("location_id"),
+                        parent_location_id=fields.get("parent_location_id"),
+                        title=fields.get("title"),
+                        age=fields.get("age"),
+                        sex=fields.get("sex"),
+                        pronouns=fields.get("pronouns"),
+                        race_id=fields.get("race_id"),
+                        family_id=fields.get("family_id"),
+                        is_dead=fields.get("is_dead"),
+                        is_map_private=fields.get("is_map_private"),
+                        creature_id=fields.get("creature_id"),
+                        is_extinct=fields.get("is_extinct"),
+                        locations=fields.get("locations"),
+                        note_id=fields.get("note_id"),
+                        is_pinned=fields.get("is_pinned"),
+                        journal_id=fields.get("journal_id"),
+                        date=fields.get("date"),
+                        character_id=fields.get("character_id"),
+                        quest_id=fields.get("quest_id"),
+                        ability_id=fields.get("ability_id"),
+                        charges=fields.get("charges"),
+                        organisation_id=fields.get("organisation_id"),
+                        is_defunct=fields.get("is_defunct"),
+                        map_id=fields.get("map_id"),
+                        is_real=fields.get("is_real"),
                         is_completed=fields.get("is_completed"),
                         image_uuid=fields.get("image_uuid"),
                         header_uuid=fields.get("header_uuid"),
+                        event_parent_id=fields.get("event_parent_id"),
+                        calendar_id=fields.get("calendar_id"),
+                        calendar_id_set=("calendar_id" in fields),
                     )
                     results.append(
                         {
@@ -1470,6 +1922,71 @@ class KankaOperations:
                             "entity_id": entity_id,
                         }
                     )
+                elif op == "create_entity":
+                    fields = step.get("fields")
+                    if not isinstance(fields, dict):
+                        raise ValueError("`fields` must be an object for create_entity")
+                    if not fields.get("entity_type") or not fields.get("name"):
+                        raise ValueError(
+                            "create_entity requires `fields.entity_type` and `fields.name`"
+                        )
+                    data = self.service.create_entity(
+                        entity_type=fields["entity_type"],
+                        name=fields["name"],
+                        type=fields.get("type"),
+                        entry=fields.get("entry"),
+                        tags=fields.get("tags"),
+                        is_hidden=fields.get("is_hidden"),
+                        location_id=fields.get("location_id"),
+                        parent_location_id=fields.get("parent_location_id"),
+                        title=fields.get("title"),
+                        age=fields.get("age"),
+                        sex=fields.get("sex"),
+                        pronouns=fields.get("pronouns"),
+                        race_id=fields.get("race_id"),
+                        family_id=fields.get("family_id"),
+                        is_dead=fields.get("is_dead"),
+                        is_map_private=fields.get("is_map_private"),
+                        creature_id=fields.get("creature_id"),
+                        is_extinct=fields.get("is_extinct"),
+                        locations=fields.get("locations"),
+                        note_id=fields.get("note_id"),
+                        is_pinned=fields.get("is_pinned"),
+                        journal_id=fields.get("journal_id"),
+                        date=fields.get("date"),
+                        character_id=fields.get("character_id"),
+                        quest_id=fields.get("quest_id"),
+                        ability_id=fields.get("ability_id"),
+                        charges=fields.get("charges"),
+                        organisation_id=fields.get("organisation_id"),
+                        is_defunct=fields.get("is_defunct"),
+                        map_id=fields.get("map_id"),
+                        is_real=fields.get("is_real"),
+                        is_completed=fields.get("is_completed"),
+                        image_uuid=fields.get("image_uuid"),
+                        header_uuid=fields.get("header_uuid"),
+                        calendar_id=fields.get("calendar_id"),
+                        calendar_year=fields.get("calendar_year"),
+                        calendar_month=fields.get("calendar_month"),
+                        calendar_day=fields.get("calendar_day"),
+                        event_parent_id=fields.get("event_parent_id"),
+                    )
+                    results.append({"step": i, "op": op, "success": True, "data": data})
+                elif op == "create_post":
+                    fields = step.get("fields")
+                    if not isinstance(fields, dict):
+                        raise ValueError("`fields` must be an object for create_post")
+                    if fields.get("entity_id") is None or not fields.get("name"):
+                        raise ValueError(
+                            "create_post requires `fields.entity_id` and `fields.name`"
+                        )
+                    data = self.service.create_post(
+                        entity_id=int(fields["entity_id"]),
+                        name=fields["name"],
+                        entry=fields.get("entry"),
+                        is_hidden=fields.get("is_hidden"),
+                    )
+                    results.append({"step": i, "op": op, "success": True, "data": data})
                 elif op == "remove_entity_tags_by_tag_id":
                     entity_id = int(step["entity_id"])
                     tag_id = int(step["tag_id"])

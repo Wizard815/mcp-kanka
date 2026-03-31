@@ -23,7 +23,6 @@ class TestKankaService:
         # Set up mock managers
         self.mock_client.characters = MagicMock()
         self.mock_client.creatures = MagicMock()
-        self.mock_client.families = MagicMock()
         self.mock_client.locations = MagicMock()
         self.mock_client.organisations = MagicMock()
         self.mock_client.races = MagicMock()
@@ -31,8 +30,7 @@ class TestKankaService:
         self.mock_client.journals = MagicMock()
         self.mock_client.quests = MagicMock()
         self.mock_client.tags = MagicMock()
-        # Items use direct API (_request), no SDK manager
-        self.mock_client._request = MagicMock()
+        self.mock_client.events = MagicMock()
 
     def test_initialization_missing_token(self):
         """Test initialization fails without token."""
@@ -68,16 +66,12 @@ class TestKankaService:
         # Set up list() to return appropriate results for each entity type
         self.mock_client.characters.list.return_value = [mock_char1, mock_char2]
         self.mock_client.creatures.list.return_value = []
-        self.mock_client.families.list.return_value = []
         self.mock_client.locations.list.return_value = [mock_loc]
         self.mock_client.organisations.list.return_value = []
         self.mock_client.races.list.return_value = []
         self.mock_client.notes.list.return_value = []
         self.mock_client.journals.list.return_value = []
         self.mock_client.quests.list.return_value = []
-        self.mock_client.tags.list.return_value = []
-        # Items use direct API
-        self.mock_client._request.return_value = {"data": []}
 
         # Test search without type filter
         results = self.service.search_entities("test query", limit=100)
@@ -116,6 +110,72 @@ class TestKankaService:
 
         # Verify only characters endpoint was called
         self.mock_client.characters.list.assert_called_once_with(name="test", limit=50)
+
+    def test_global_search_entities_skips_malformed_rows(self):
+        """Test global_search_entities skips rows missing entity_id."""
+        valid = Mock()
+        valid.id = 10
+        valid.entity_id = 101
+        valid.name = "Valid"
+        valid.image = None
+        valid.type = "character"
+        valid.tooltip = "ok"
+        valid.url = "/entities/101"
+        valid.is_private = False
+        valid.created_at = datetime.now(timezone.utc)
+        valid.updated_at = datetime.now(timezone.utc)
+
+        malformed = Mock()
+        malformed.id = 11
+        malformed.name = "Broken"
+        malformed.entity_id = None
+
+        self.mock_client.search.return_value = [valid, malformed]
+
+        results = self.service.global_search_entities("term", page=2)
+
+        assert len(results) == 1
+        assert results[0]["entity_id"] == 101
+        self.mock_client.search.assert_called_once_with("term", page=2)
+
+    def test_global_search_entities_supports_dict_rows(self):
+        """Test global_search_entities handles dict-shaped rows defensively."""
+        self.mock_client.search.return_value = [
+            {
+                "id": 12,
+                "entity_id": 202,
+                "name": "Map Entry",
+                "type": "map",
+                "created_at": "2025-01-01T00:00:00Z",
+                "updated_at": "2025-01-02T00:00:00Z",
+            }
+        ]
+
+        results = self.service.global_search_entities("map")
+
+        assert len(results) == 1
+        assert results[0]["entity_id"] == 202
+        assert results[0]["type"] == "map"
+
+    def test_global_search_entities_falls_back_to_raw_on_sdk_error(self):
+        """Test SDK search errors fallback to raw endpoint parsing."""
+        self.mock_client.search.side_effect = Exception("pydantic validation error")
+        self.mock_client._request.return_value = {
+            "data": [
+                {
+                    "id": 303,
+                    "name": "Calendar Row",
+                    "type": "calendar",
+                    "url": "/calendars/1",
+                }
+            ]
+        }
+
+        results = self.service.global_search_entities("calendar")
+
+        assert len(results) == 1
+        assert results[0]["entity_id"] == 303
+        self.mock_client._request.assert_called_once()
 
     def test_list_entities(self):
         """Test listing entities of a specific type."""
@@ -174,15 +234,19 @@ class TestKankaService:
 
     def test_create_entity_basic(self):
         """Test creating a basic entity."""
-        # Mock direct API response
-        self.mock_client._request.return_value = {
-            "data": {
-                "id": 1,
-                "entity_id": 101,
-                "name": "Test Character",
-                "type": "NPC",
-            }
-        }
+        # Mock created entity - set attributes properly
+        mock_entity = Mock()
+        mock_entity.id = 1
+        mock_entity.entity_id = 101
+        mock_entity.name = "Test Character"
+        mock_entity.type = "NPC"
+        mock_entity.is_private = False  # Public
+        mock_entity.tags = []
+        mock_entity.entry = "<p>Test description</p>"
+        mock_entity.created_at = datetime.now()
+        mock_entity.updated_at = datetime.now()
+        mock_entity.posts = None  # No posts by default
+        self.mock_client.characters.create.return_value = mock_entity
 
         # Initialize tag cache to empty
         self.service._tag_cache = {}
@@ -200,14 +264,184 @@ class TestKankaService:
         assert result["name"] == "Test Character"
         assert result["mention"] == "[entity:101]"
 
-        # Check the direct API call was made correctly
-        self.mock_client._request.assert_called_once()
-        call_args = self.mock_client._request.call_args
-        assert call_args[0] == ("POST", "characters")
-        payload = call_args[1]["json"]
-        assert payload["name"] == "Test Character"
-        assert payload["type"] == "NPC"
-        assert "<p>Test description</p>" in payload["entry"]
+        # Check the call was made correctly
+        self.mock_client.characters.create.assert_called_once()
+        call_args = self.mock_client.characters.create.call_args[1]
+        assert call_args["name"] == "Test Character"
+        assert call_args["type"] == "NPC"
+        assert "<p>Test description</p>" in call_args["entry"]
+
+    def test_create_character_with_extended_fields(self):
+        mock_entity = Mock()
+        mock_entity.id = 7
+        mock_entity.entity_id = 70
+        mock_entity.name = "Aria"
+        mock_entity.type = "PC"
+        mock_entity.is_private = False
+        mock_entity.tags = []
+        mock_entity.entry = None
+        mock_entity.created_at = datetime.now()
+        mock_entity.updated_at = datetime.now()
+        mock_entity.posts = None
+        self.mock_client.characters.create.return_value = mock_entity
+        self.service._tag_cache = {}
+
+        self.service.create_entity(
+            entity_type="character",
+            name="Aria",
+            title="Captain",
+            age="32",
+            sex="F",
+            pronouns="she/her",
+            location_id=12,
+            is_dead=False,
+            race_id=3,
+            family_id=4,
+        )
+
+        kwargs = self.mock_client.characters.create.call_args.kwargs
+        assert kwargs["title"] == "Captain"
+        assert kwargs["age"] == "32"
+        assert kwargs["sex"] == "F"
+        assert kwargs["pronouns"] == "she/her"
+        assert kwargs["location_id"] == 12
+        assert kwargs["is_dead"] is False
+        assert kwargs["race_id"] == 3
+        assert kwargs["family_id"] == 4
+
+    def test_update_location_parent_location_id_maps_to_api_location_id(self):
+        with patch.object(
+            self.service,
+            "get_entity_by_id",
+            return_value={
+                "id": 18,
+                "entity_id": 180,
+                "entity_type": "location",
+                "name": "District",
+            },
+        ):
+            self.service.update_entity(180, parent_location_id=9, is_map_private=True)
+
+        self.mock_client.locations.update.assert_called_once()
+        kwargs = self.mock_client.locations.update.call_args.kwargs
+        assert kwargs["location_id"] == 9
+        assert kwargs["is_map_private"] is True
+
+    def test_create_event_with_calendar_fields(self):
+        """Event create passes calendar placement to the API."""
+        mock_entity = Mock()
+        mock_entity.id = 5
+        mock_entity.entity_id = 55
+        mock_entity.name = "Festival"
+        mock_entity.type = "holiday"
+        mock_entity.is_private = False
+        mock_entity.tags = []
+        mock_entity.entry = None
+        mock_entity.created_at = datetime.now()
+        mock_entity.updated_at = datetime.now()
+        mock_entity.posts = None
+        self.mock_client.events.create.return_value = mock_entity
+        self.service._tag_cache = {}
+
+        self.service.create_entity(
+            entity_type="event",
+            name="Festival",
+            type="holiday",
+            calendar_id=1,
+            calendar_year=2026,
+            calendar_month=3,
+            calendar_day=30,
+        )
+
+        self.mock_client.events.create.assert_called_once()
+        kwargs = self.mock_client.events.create.call_args.kwargs
+        assert kwargs["name"] == "Festival"
+        assert kwargs["type"] == "holiday"
+        assert kwargs["calendar_id"] == 1
+        assert kwargs["calendar_year"] == 2026
+        assert kwargs["calendar_month"] == 3
+        assert kwargs["calendar_day"] == 30
+
+    def test_create_event_event_parent_id_maps_to_api_event_id(self):
+        """MCP event_parent_id is sent as Kanka's event_id (parent module child id)."""
+        mock_entity = Mock()
+        mock_entity.id = 6
+        mock_entity.entity_id = 66
+        mock_entity.name = "Child"
+        mock_entity.type = "session"
+        mock_entity.is_private = False
+        mock_entity.tags = []
+        mock_entity.entry = None
+        mock_entity.created_at = datetime.now()
+        mock_entity.updated_at = datetime.now()
+        mock_entity.posts = None
+        self.mock_client.events.create.return_value = mock_entity
+        self.service._tag_cache = {}
+
+        self.service.create_entity(
+            entity_type="event",
+            name="Child",
+            type="session",
+            event_parent_id=99,
+        )
+
+        kwargs = self.mock_client.events.create.call_args.kwargs
+        assert kwargs["event_id"] == 99
+        assert "calendar_id" not in kwargs
+
+    def test_update_event_event_parent_id_maps_to_api_event_id(self):
+        with patch.object(
+            self.service,
+            "get_entity_by_id",
+            return_value={
+                "id": 42,
+                "entity_id": 500,
+                "entity_type": "event",
+                "name": "Child",
+            },
+        ):
+            self.service.update_entity(500, event_parent_id=11)
+
+        self.mock_client.events.update.assert_called_once()
+        assert self.mock_client.events.update.call_args[0][0] == 42
+        assert self.mock_client.events.update.call_args[1]["event_id"] == 11
+
+    def test_update_event_calendar_id_null_is_sent(self):
+        with patch.object(
+            self.service,
+            "get_entity_by_id",
+            return_value={
+                "id": 42,
+                "entity_id": 500,
+                "entity_type": "event",
+                "name": "Child",
+            },
+        ):
+            self.service.update_entity(500, calendar_id=None, calendar_id_set=True)
+
+        self.mock_client.events.update.assert_called_once()
+        assert self.mock_client.events.update.call_args[0][0] == 42
+        assert "calendar_id" in self.mock_client.events.update.call_args[1]
+        assert self.mock_client.events.update.call_args[1]["calendar_id"] is None
+
+    def test_list_calendar_events_all_merges_pages(self):
+        def fake_list(calendar_id: int, page: int = 1, limit: int = 15):
+            if page == 1:
+                return {
+                    "data": [{"id": "a"}],
+                    "meta": {"last_page": 2},
+                }
+            return {
+                "data": [{"id": "b"}],
+                "meta": {"last_page": 2},
+            }
+
+        with patch.object(self.service, "list_calendar_events", side_effect=fake_list):
+            out = self.service.list_calendar_events_all(99, limit=15)
+
+        assert [x["id"] for x in out["data"]] == ["a", "b"]
+        assert out["meta"]["fetch_all"] is True
+        assert out["meta"]["total"] == 2
 
     def test_create_entity_with_tags(self):
         """Test creating an entity with tags."""
@@ -224,15 +458,17 @@ class TestKankaService:
         self.mock_client.tags.list.return_value = [mock_tag1]
         self.mock_client.tags.create.return_value = mock_tag2
 
-        # Mock direct API response for entity creation
-        self.mock_client._request.return_value = {
-            "data": {
-                "id": 1,
-                "entity_id": 101,
-                "name": "Test Character",
-                "type": None,
-            }
-        }
+        # Mock created entity
+        mock_entity = Mock()
+        mock_entity.id = 1
+        mock_entity.entity_id = 101
+        mock_entity.name = "Test Character"
+        mock_entity.tags = [1, 2]
+        mock_entity.entry = "<p>Test description</p>"  # Need entry for conversion
+        mock_entity.created_at = datetime.now()
+        mock_entity.updated_at = datetime.now()
+        mock_entity.posts = None  # No posts by default
+        self.mock_client.characters.create.return_value = mock_entity
 
         # Initialize tag cache
         self.service._tag_cache = {}
@@ -246,10 +482,53 @@ class TestKankaService:
         self.mock_client.tags.list.assert_called()
         self.mock_client.tags.create.assert_called_once_with(name="warrior")
 
-        # Check entity was created with tag IDs via direct API
-        call_args = self.mock_client._request.call_args
-        payload = call_args[1]["json"]
-        assert payload["tags"] == [1, 2]
+        # Check entity was created with tag IDs
+        call_args = self.mock_client.characters.create.call_args[1]
+        assert call_args["tags"] == [1, 2]
+
+    def test_get_entity_by_id_falls_back_from_child_id(self):
+        """Test resolving module child id to entity_id when direct lookup misses."""
+        self.mock_client.entity.side_effect = [
+            None,
+            {"id": 123, "entity_id": 555, "type": "location", "name": "Hokkaido"},
+        ]
+        candidate = Mock()
+        candidate.entity_id = 555
+        self.mock_client.locations.get.side_effect = [candidate, Exception("no sdk row")]
+
+        result = self.service.get_entity_by_id(123)
+
+        assert result is not None
+        assert result["entity_id"] == 555
+        assert self.mock_client.entity.call_count == 2
+
+    def test_get_entities_bulk_maps_rows(self):
+        """Test bulk entity retrieval maps entities by entity_id."""
+        self.mock_client._request.return_value = {
+            "data": [
+                {
+                    "id": 1,
+                    "entity_id": 101,
+                    "name": "A",
+                    "type": "character",
+                    "is_private": False,
+                },
+                {
+                    "id": 2,
+                    "entity_id": 202,
+                    "name": "B",
+                    "type": "organisation",
+                    "is_private": True,
+                },
+            ]
+        }
+
+        result = self.service.get_entities_bulk([101, 202], include_posts=False)
+
+        assert set(result.keys()) == {101, 202}
+        assert result[101]["entity_type"] == "character"
+        assert result[202]["entity_type"] == "organization"
+        self.mock_client._request.assert_called_once()
 
     def test_update_entity(self):
         """Test updating an entity."""
@@ -263,8 +542,8 @@ class TestKankaService:
             }
         )
 
-        # Mock direct API response
-        self.mock_client._request.return_value = {"data": {}}
+        # Mock update
+        self.mock_client.characters.update.return_value = None
 
         # Test update
         result = self.service.update_entity(
@@ -272,13 +551,9 @@ class TestKankaService:
         )
 
         assert result is True
-        # Verify direct API call with correct endpoint and payload
-        self.mock_client._request.assert_called_once()
-        call_args = self.mock_client._request.call_args
-        assert call_args[0] == ("PATCH", "characters/1")
-        payload = call_args[1]["json"]
-        assert payload["name"] == "New Name"
-        assert payload["type"] == "Updated NPC"
+        self.mock_client.characters.update.assert_called_once_with(
+            1, name="New Name", type="Updated NPC"  # The type-specific ID
+        )
 
     def test_update_entity_not_found(self):
         """Test updating non-existent entity."""
@@ -523,46 +798,38 @@ class TestKankaService:
 
         assert len(entities) == 150
 
-    def test_calendar_create_uses_flat_arrays(self):
-        """Calendar create sends month_name, month_length, weekday as flat arrays (moons via UI)."""
+    def test_get_map_marker_returns_data(self):
+        """GET single map marker returns inner data dict."""
         self.mock_client._request.return_value = {
-            "data": {"id": 1, "entity_id": 99, "name": "Test", "type": None}
+            "data": {"id": 9, "name": "X", "map_id": 3},
         }
-        self.service.create_entity(
-            "calendar",
-            "Test Calendar",
-            weekday=["Mon", "Tue"],
-            month_name=["Jan", "Feb"],
-            month_length=[31, 28],
+        d = self.service.get_map_marker(3, 9)
+        assert d["name"] == "X"
+        self.mock_client._request.assert_called_once_with(
+            "GET", "maps/3/map_markers/9"
         )
-        call_args = self.mock_client._request.call_args
-        assert call_args[0][0] == "POST"
-        assert call_args[0][1] == "calendars"
-        payload = call_args[1]["json"]
-        assert "weekday" in payload
-        assert payload["weekday"] == ["Mon", "Tue"]
-        assert payload["month_name"] == ["Jan", "Feb"]
-        assert payload["month_length"] == [31, 28]
-        assert "moon_name" not in payload
-        assert "moons" not in payload
 
-    def test_calendar_update_uses_flat_arrays(self):
-        """Calendar update sends month_name, month_length as flat arrays."""
-        self.mock_client.entity.return_value = {
-            "type": "Calendar",
-            "child": {"id": 1, "entity_id": 99},
-        }
+    def test_update_map_marker_clear_entity_merges_name_from_get(self):
+        """Clearing entity_id without name triggers GET and PATCH includes current name."""
+        self.mock_client._request.side_effect = [
+            {"data": {"id": 1, "name": "Shikoku", "map_id": 2}},
+            {"data": {"id": 1, "name": "Shikoku", "entity_id": None}},
+        ]
+        self.service.update_map_marker(2, 1, {"entity_id": None})
+        assert self.mock_client._request.call_count == 2
+        get_call = self.mock_client._request.call_args_list[0]
+        assert get_call[0] == ("GET", "maps/2/map_markers/1")
+        patch_call = self.mock_client._request.call_args_list[1]
+        assert patch_call[0][0] == "PATCH"
+        assert patch_call[1]["json"]["name"] == "Shikoku"
+        assert patch_call[1]["json"]["entity_id"] is None
+        assert patch_call[1]["json"]["map_id"] == 2
+
+    def test_update_map_marker_clear_entity_with_explicit_name_skips_get(self):
+        """When name is provided, no GET is needed to clear entity_id."""
         self.mock_client._request.return_value = {"data": {}}
-        self.service.update_entity(
-            99,
-            "Test Calendar",
-            month_name=["Jan", "Feb"],
-            month_length=[31, 28],
+        self.service.update_map_marker(
+            2, 1, {"entity_id": None, "name": "Shikoku"}
         )
-        calls = self.mock_client._request.call_args_list
-        patch_call = next(c for c in calls if c[0][0] in ("PUT", "PATCH"))
-        payload = patch_call[1]["json"]
-        assert "month_name" in payload
-        assert payload["month_name"] == ["Jan", "Feb"]
-        assert payload["month_length"] == [31, 28]
-        assert "moon_name" not in payload
+        self.mock_client._request.assert_called_once()
+        assert self.mock_client._request.call_args[0][0] == "PATCH"

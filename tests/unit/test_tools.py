@@ -91,7 +91,12 @@ class TestFindEntities:
         assert entities[1]["name"] == "Test Charlie"
 
         mock_service.list_entities.assert_called_once_with(
-            "character", page=1, limit=0, last_sync=None, related=True
+            "character",
+            page=1,
+            limit=0,
+            last_sync=None,
+            related=True,
+            tag_ids=None,
         )
 
     @patch("mcp_kanka.operations.get_service")
@@ -148,7 +153,12 @@ class TestFindEntities:
         assert entities[1]["name"] == "Bob"
 
         mock_service.list_entities.assert_called_once_with(
-            "character", page=1, limit=0, last_sync=None, related=True
+            "character",
+            page=1,
+            limit=0,
+            last_sync=None,
+            related=True,
+            tag_ids=None,
         )
 
     @patch("mcp_kanka.operations.filter_entities_by_name")
@@ -632,12 +642,13 @@ class TestInvalidParameters:
 
     @patch("mcp_kanka.operations.get_service")
     async def test_update_entities_missing_required_fields(self, mock_get_service):
-        """Test update_entities with missing required fields."""
+        """Test update_entities when `name` is omitted (PATCH-like behavior)."""
         # Mock service
         mock_service = Mock()
         mock_get_service.return_value = mock_service
+        mock_service.update_entity.return_value = True
 
-        # Test missing name (required by Kanka API)
+        # Missing `name` should be allowed; service layer may retry if API needs it.
         result = await handle_update_entities(
             updates=[
                 {
@@ -648,13 +659,16 @@ class TestInvalidParameters:
             ]
         )
 
-        # Should return error for missing required field
+        # Should proceed (name is optional for PATCH)
         assert len(result) == 1
-        assert result[0]["success"] is False
-        assert (
-            "name" in result[0]["error"].lower()
-            or "required" in result[0]["error"].lower()
-        )
+        assert result[0]["success"] is True
+        assert result[0]["error"] is None
+        mock_service.update_entity.assert_called_once()
+        kwargs = mock_service.update_entity.call_args.kwargs
+        assert kwargs["entity_id"] == 123
+        assert kwargs["name"] is None
+        assert kwargs["entry"] == "Updated content"
+        assert kwargs["calendar_id_set"] is False
 
 
 class TestPostOperations:

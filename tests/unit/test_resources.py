@@ -2,7 +2,7 @@
 
 import json
 
-from mcp_kanka.resources import get_kanka_api_reference, get_kanka_context
+from mcp_kanka.resources import get_kanka_context
 
 
 class TestGetKankaContext:
@@ -38,25 +38,23 @@ class TestGetKankaContext:
 
         entities = data["supported_entities"]
         assert isinstance(entities, dict)
-        assert len(entities) == 15
+        assert len(entities) == 13
 
         # Check all expected entity types
         expected_types = [
-            "calendar",
             "character",
             "creature",
-            "event",
-            "family",
-            "item",
+            "ability",
+            "conversation",
             "location",
-            "map",
             "organization",
+            "dice_roll",
+            "bookmark",
             "race",
             "note",
             "journal",
             "quest",
-            "tag",
-            "timeline",
+            "attribute",
         ]
         for expected in expected_types:
             assert expected in entities
@@ -142,19 +140,3 @@ class TestGetKankaContext:
         # And deserialize again
         data2 = json.loads(json_str)
         assert data2 == data
-
-
-class TestGetKankaApiReference:
-    """Test the get_kanka_api_reference function."""
-
-    def test_returns_markdown_string(self):
-        """Test that the function returns a string (markdown content)."""
-        result = get_kanka_api_reference()
-        assert isinstance(result, str)
-        assert len(result) > 0
-
-    def test_contains_calendar_moon_format(self):
-        """Test that the API reference documents calendar moon format."""
-        result = get_kanka_api_reference()
-        assert "moon_name" in result or "moon_fullmoon" in result
-        assert "Calendars" in result or "calendar" in result.lower()

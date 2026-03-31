@@ -12,6 +12,8 @@
 > - This fork optimizes for high-volume campaign migrations and region/location conversion workflows with stricter sequencing and guardrails.
 
 
+> This branch builds on MCP-Kanka main and adds extra module-focused capabilities for this campaign workflow.
+
 MCP (Model Context Protocol) server for Kanka API integration. This server provides AI assistants with tools to interact with Kanka campaigns, enabling CRUD operations on various entity types like characters, locations, organizations, and more.
 
 This package is designed specifically to serve the needs of [Teghrim](https://github.com/ervwalter/teghrim) but may be useful to others working with Kanka and MCP.
@@ -98,8 +100,13 @@ claude mcp add kanka \
 - **Note** - Internal content, session digests, GM notes (private by default)
 - **Journal** - Session summaries, narratives, chronicles
 - **Quest** - Missions, objectives, story arcs
+- **Ability** - Special actions and abilities
+- **Conversation** - In-game dialog content
+- **Dice Roll** - Dice roll definitions
+- **Bookmark** - Bookmarks for sharing links
+- **Attribute** - Entity properties/stat blocks
 
-## Available Tools (9 Total)
+## Available Tools (22 Total)
 
 ### Entity Operations
 
@@ -128,6 +135,7 @@ Search and filter entities with comprehensive options and sync metadata.
     "request_timestamp": "2024-01-01T12:00:00Z",
     "newest_updated_at": "2024-01-01T11:30:00Z",
     "total_count": 150,
+    "last_page": 6,
     "returned_count": 25
   }
 }
@@ -140,7 +148,7 @@ Create one or more entities with markdown content.
 - `entities`: Array of entities to create, each with:
   - `entity_type` (required): Type of entity to create
   - `name` (required): Entity name
-  - `entry` (optional): Description in Markdown format
+  - `entry` (optional): Description (Markdown accepted; auto-converted to HTML for API)
   - `type` (optional): User-defined Type field (e.g., 'NPC', 'Player Character')
   - `tags` (optional): Array of tag names
   - `is_hidden` (optional): If true, hidden from players (admin-only)
@@ -153,8 +161,8 @@ Update one or more existing entities.
 **Parameters:**
 - `updates`: Array of updates, each with:
   - `entity_id` (required): ID of entity to update
-  - `name` (required): Entity name (required by Kanka API even if unchanged)
-  - `entry` (optional): Updated content in Markdown format
+  - `name` (optional): Entity name (optional for PATCH; if omitted and API requires it, MCP will retry with current name)
+  - `entry` (optional): Updated content (Markdown accepted; auto-converted to HTML for API)
   - `type` (optional): Updated Type field
   - `tags` (optional): Updated array of tags
   - `is_hidden` (optional): If true, hidden from players (admin-only)
@@ -177,6 +185,24 @@ Delete one or more entities.
 - `entity_ids` (required): Array of entity IDs to delete
 
 **Returns:** Array of results with success/error status for each deletion
+
+## Management Tools
+
+This MCP server provides doc-verified `manage_*` tools and supporting read-only tools:
+
+- `manage_map_markers`: map marker CRUD
+- `manage_relations`: relation CRUD
+- `manage_timeline_elements`: timeline element CRUD (includes `position`)
+- `manage_attributes`: entity property/attribute CRUD
+- `manage_entity_tags`: entity tag add/remove
+- `manage_inventory`: entity inventory CRUD
+- `manage_permissions`: per-entity permissions (list/update)
+- `search_entities`: global search across all entity types
+- `get_archives`: retrieve archived entities
+- `manage_entity_image`: entity image list/upload/remove
+- `manage_calendar_weather`: calendar weather CRUD
+- `calendar_advance_date`: advance calendar by one day
+- `calendar_retreat_date`: retreat calendar by one day
 
 #### `check_entity_updates`
 Efficiently check which entities have been modified since last sync.
@@ -203,7 +229,7 @@ Add posts (notes) to entities.
 - `posts`: Array of posts to create, each with:
   - `entity_id` (required): Entity to attach post to
   - `name` (required): Post title
-  - `entry` (optional): Post content in Markdown format
+  - `entry` (optional): Post content (Markdown accepted; auto-converted to HTML for API)
   - `is_hidden` (optional): If true, hidden from players (admin-only)
 
 **Returns:** Array of created posts with their IDs
@@ -215,8 +241,8 @@ Modify existing posts.
 - `updates`: Array of updates, each with:
   - `entity_id` (required): The entity ID
   - `post_id` (required): The post ID to update
-  - `name` (required): Post title (required by API even if unchanged)
-  - `entry` (optional): Updated content in Markdown format
+  - `name` (optional): Post title (optional for PATCH; if omitted and API requires it, MCP will retry with current title)
+  - `entry` (optional): Updated content (Markdown accepted; auto-converted to HTML for API)
   - `is_hidden` (optional): If true, hidden from players (admin-only)
 
 **Returns:** Array of results with success/error status for each update
@@ -257,6 +283,7 @@ The `find_entities` tool returns sync metadata including:
 - `request_timestamp`: When the request was made
 - `newest_updated_at`: Latest updated_at from returned entities
 - `total_count`: Total matching entities
+- `last_page`: Last pagination page number
 - `returned_count`: Number returned in this response
 
 ### Efficient Sync with lastSync
