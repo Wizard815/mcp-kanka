@@ -180,6 +180,7 @@ class TestCreateEntities:
                 {
                     "entity_type": "character",
                     "name": "Aria",
+                    "status": 2,
                     "title": "Captain",
                     "race_id": 4,
                     "family_id": 7,
@@ -188,6 +189,7 @@ class TestCreateEntities:
         )
 
         kwargs = mock_service.create_entity.call_args.kwargs
+        assert kwargs["status"] == 2
         assert kwargs["title"] == "Captain"
         assert kwargs["race_id"] == 4
         assert kwargs["family_id"] == 7
@@ -288,10 +290,10 @@ class TestSearchEntities:
         assert "API Error" in result[1]["error"]
 
     @patch("mcp_kanka.operations.KankaService")
-    async def test_create_character_with_reminder_adds_reminder(
+    async def test_create_character_ignores_legacy_reminder_payload(
         self, mock_service_class
     ):
-        """Test creating character with reminder (type birth) adds reminder for age calc."""
+        """Legacy inline reminder payload is ignored by create_entities."""
         mock_service = Mock()
         mock_service_class.return_value = mock_service
         mock_service.create_entity.return_value = {
@@ -300,7 +302,6 @@ class TestSearchEntities:
             "name": "Elder NPC",
             "mention": "[entity:101]",
         }
-        mock_service.create_calendar_reminder.return_value = {"id": 1, "year": 600}
 
         ops = KankaOperations(service=mock_service)
 
@@ -323,16 +324,8 @@ class TestSearchEntities:
 
         assert len(result) == 1
         assert result[0]["success"] is True
-        assert result[0]["reminder_added"] is True
-        mock_service.create_calendar_reminder.assert_called_once_with(
-            entity_id=101,
-            calendar_id=8893860,
-            year=600,
-            month=1,
-            day=15,
-            length=1,
-            event_type="birth",
-        )
+        assert "reminder_added" not in result[0]
+        mock_service.create_calendar_reminder.assert_not_called()
 
 
 class TestUpdateEntities:
@@ -402,12 +395,35 @@ class TestUpdateEntities:
 
         ops = KankaOperations(service=mock_service)
         await ops.update_entities(
-            [{"entity_id": 101, "parent_location_id": 9, "is_map_private": True}]
+            [
+                {
+                    "entity_id": 101,
+                    "parent_id": 99,
+                    "parent_location_id": 9,
+                    "is_map_private": True,
+                    "status": 1,
+                    "event_locations": [4, 5],
+                    "calendar_year": 1200,
+                    "calendar_month": 4,
+                    "calendar_day": 22,
+                    "icon": "fa-solid fa-crown",
+                    "colour": "#123456",
+                }
+            ]
         )
 
         kwargs = mock_service.update_entity.call_args.kwargs
+        assert kwargs["parent_id"] == 99
+        assert kwargs["parent_id_set"] is True
         assert kwargs["parent_location_id"] == 9
         assert kwargs["is_map_private"] is True
+        assert kwargs["status"] == 1
+        assert kwargs["event_locations"] == [4, 5]
+        assert kwargs["calendar_year"] == 1200
+        assert kwargs["calendar_month"] == 4
+        assert kwargs["calendar_day"] == 22
+        assert kwargs["icon"] == "fa-solid fa-crown"
+        assert kwargs["colour"] == "#123456"
 
     @patch("mcp_kanka.operations.KankaService")
     async def test_update_event_explicit_null_calendar_id(self, mock_service_class):
@@ -447,6 +463,7 @@ class TestGetEntities:
             "entry": "Description",
             "tags": ["test"],
             "is_hidden": False,
+            "parent_id": 500,
         }
 
         ops = KankaOperations(service=mock_service)
@@ -459,6 +476,7 @@ class TestGetEntities:
         assert result[0]["success"] is True
         assert result[0]["entity_id"] == 101
         assert result[0]["name"] == "Test Entity"
+        assert result[0]["parent_id"] == 500
         assert "posts" not in result[0]
 
     @patch("mcp_kanka.operations.KankaService")
@@ -519,6 +537,7 @@ class TestGetEntities:
                 "entity_id": 101,
                 "name": "Bulk Entity",
                 "entity_type": "character",
+                "parent_id": None,
             }
         }
         mock_service.get_entity_by_id.return_value = {
@@ -534,6 +553,7 @@ class TestGetEntities:
         assert len(result) == 2
         assert result[0]["success"] is True
         assert result[1]["success"] is True
+        assert result[0]["parent_id"] is None
         mock_service.get_entities_bulk.assert_called_once_with([101, 202], False)
         mock_service.get_entity_by_id.assert_called_once_with(202, False)
 

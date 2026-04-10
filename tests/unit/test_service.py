@@ -112,54 +112,58 @@ class TestKankaService:
         self.mock_client.characters.list.assert_called_once_with(name="test", limit=50)
 
     def test_global_search_entities_skips_malformed_rows(self):
-        """Test global_search_entities skips rows missing entity_id."""
-        valid = Mock()
-        valid.id = 10
-        valid.entity_id = 101
-        valid.name = "Valid"
-        valid.image = None
-        valid.type = "character"
-        valid.tooltip = "ok"
-        valid.url = "/entities/101"
-        valid.is_private = False
-        valid.created_at = datetime.now(timezone.utc)
-        valid.updated_at = datetime.now(timezone.utc)
-
-        malformed = Mock()
-        malformed.id = 11
-        malformed.name = "Broken"
-        malformed.entity_id = None
-
-        self.mock_client.search.return_value = [valid, malformed]
+        """Test global_search_entities skips rows missing entity_id and id."""
+        self.mock_client._request.return_value = {
+            "data": [
+                {
+                    "id": 10,
+                    "entity_id": 101,
+                    "name": "Valid",
+                    "type": "character",
+                    "tooltip": "ok",
+                    "url": "/entities/101",
+                    "is_private": False,
+                    "created_at": "2025-01-01T00:00:00Z",
+                    "updated_at": "2025-01-02T00:00:00Z",
+                },
+                {"name": "Broken"},
+            ]
+        }
 
         results = self.service.global_search_entities("term", page=2)
 
         assert len(results) == 1
         assert results[0]["entity_id"] == 101
-        self.mock_client.search.assert_called_once_with("term", page=2)
+        self.mock_client._request.assert_called_once_with(
+            "GET", "search/term", params={"page": 2}
+        )
 
     def test_global_search_entities_supports_dict_rows(self):
         """Test global_search_entities handles dict-shaped rows defensively."""
-        self.mock_client.search.return_value = [
-            {
-                "id": 12,
-                "entity_id": 202,
-                "name": "Map Entry",
-                "type": "map",
-                "created_at": "2025-01-01T00:00:00Z",
-                "updated_at": "2025-01-02T00:00:00Z",
-            }
-        ]
+        self.mock_client._request.return_value = {
+            "data": [
+                {
+                    "id": 12,
+                    "entity_id": 202,
+                    "name": "Map Entry",
+                    "type": "map",
+                    "created_at": "2025-01-01T00:00:00Z",
+                    "updated_at": "2025-01-02T00:00:00Z",
+                }
+            ]
+        }
 
         results = self.service.global_search_entities("map")
 
         assert len(results) == 1
         assert results[0]["entity_id"] == 202
         assert results[0]["type"] == "map"
+        self.mock_client._request.assert_called_once_with(
+            "GET", "search/map", params={"page": 1}
+        )
 
-    def test_global_search_entities_falls_back_to_raw_on_sdk_error(self):
-        """Test SDK search errors fallback to raw endpoint parsing."""
-        self.mock_client.search.side_effect = Exception("pydantic validation error")
+    def test_global_search_entities_maps_id_when_entity_id_absent(self):
+        """API may return module id only; normalize to entity_id for callers."""
         self.mock_client._request.return_value = {
             "data": [
                 {
@@ -175,7 +179,9 @@ class TestKankaService:
 
         assert len(results) == 1
         assert results[0]["entity_id"] == 303
-        self.mock_client._request.assert_called_once()
+        self.mock_client._request.assert_called_once_with(
+            "GET", "search/calendar", params={"page": 1}
+        )
 
     def test_list_entities(self):
         """Test listing entities of a specific type."""
@@ -309,6 +315,26 @@ class TestKankaService:
         assert kwargs["race_id"] == 3
         assert kwargs["family_id"] == 4
 
+    def test_create_character_status_maps_to_api_status(self):
+        mock_entity = Mock()
+        mock_entity.id = 8
+        mock_entity.entity_id = 80
+        mock_entity.name = "Rin"
+        mock_entity.type = "PC"
+        mock_entity.is_private = False
+        mock_entity.tags = []
+        mock_entity.entry = None
+        mock_entity.created_at = datetime.now()
+        mock_entity.updated_at = datetime.now()
+        mock_entity.posts = None
+        self.mock_client.characters.create.return_value = mock_entity
+        self.service._tag_cache = {}
+
+        self.service.create_entity(entity_type="character", name="Rin", status=2)
+
+        kwargs = self.mock_client.characters.create.call_args.kwargs
+        assert kwargs["status"] == 2
+
     def test_update_location_parent_location_id_maps_to_api_location_id(self):
         with patch.object(
             self.service,
@@ -389,6 +415,71 @@ class TestKankaService:
         assert kwargs["event_id"] == 99
         assert "calendar_id" not in kwargs
 
+    def test_create_entity_parent_id_patches_entity_parent(self):
+        """3.10 nesting: parent is tracked on the entity row."""
+        mock_entity = Mock()
+        mock_entity.id = 6
+        mock_entity.entity_id = 66
+        mock_entity.name = "Child"
+        mock_entity.type = "session"
+        mock_entity.is_private = False
+        mock_entity.tags = []
+        mock_entity.entry = None
+        mock_entity.created_at = datetime.now()
+        mock_entity.updated_at = datetime.now()
+        mock_entity.posts = None
+        self.mock_client.events.create.return_value = mock_entity
+        self.service._tag_cache = {}
+
+        self.service.create_entity(
+            entity_type="event",
+            name="Child",
+            parent_id=12345,
+        )
+
+        self.mock_client._request.assert_any_call(
+            "PATCH", "entities/66", json={"parent_id": 12345}
+        )
+
+    def test_create_event_parent_id_resolves_event_id_when_parent_is_event(self):
+        mock_entity = Mock()
+        mock_entity.id = 6
+        mock_entity.entity_id = 66
+        mock_entity.name = "Child"
+        mock_entity.type = "session"
+        mock_entity.is_private = False
+        mock_entity.tags = []
+        mock_entity.entry = None
+        mock_entity.created_at = datetime.now()
+        mock_entity.updated_at = datetime.now()
+        mock_entity.posts = None
+        self.mock_client.events.create.return_value = mock_entity
+        self.service._tag_cache = {}
+
+        parent = {
+            "id": 88,
+            "entity_id": 600,
+            "entity_type": "event",
+            "name": "Parent",
+        }
+
+        def side_effect(
+            eid: int, include_posts: bool = False, _allow_child_id_fallback: bool = True
+        ):
+            if eid == 600:
+                return parent
+            return None
+
+        with patch.object(self.service, "get_entity_by_id", side_effect=side_effect):
+            self.service.create_entity(
+                entity_type="event",
+                name="Child",
+                parent_id=600,
+            )
+
+        kwargs = self.mock_client.events.create.call_args.kwargs
+        assert kwargs["event_id"] == 88
+
     def test_update_event_event_parent_id_maps_to_api_event_id(self):
         with patch.object(
             self.service,
@@ -405,6 +496,98 @@ class TestKankaService:
         self.mock_client.events.update.assert_called_once()
         assert self.mock_client.events.update.call_args[0][0] == 42
         assert self.mock_client.events.update.call_args[1]["event_id"] == 11
+
+    def test_update_event_parent_global_entity_id_sets_event_id_via_lookup(self):
+        """parent_id pointing at another event's entity_id must set events.event_id (module id)."""
+        child = {
+            "id": 42,
+            "entity_id": 500,
+            "entity_type": "event",
+            "name": "Child",
+        }
+        parent = {
+            "id": 77,
+            "entity_id": 600,
+            "entity_type": "event",
+            "name": "Parent",
+        }
+
+        def side_effect(
+            eid: int, include_posts: bool = False, _allow_child_id_fallback: bool = True
+        ):
+            if eid == 500:
+                return child
+            if eid == 600:
+                return parent
+            return None
+
+        with patch.object(self.service, "get_entity_by_id", side_effect=side_effect):
+            self.service.update_entity(500, parent_id=600, parent_id_set=True)
+
+        self.mock_client.events.update.assert_called_once()
+        assert self.mock_client.events.update.call_args[1]["event_id"] == 77
+
+    def test_update_event_explicit_event_parent_id_wins_over_parent_lookup(self):
+        child = {
+            "id": 42,
+            "entity_id": 500,
+            "entity_type": "event",
+            "name": "Child",
+        }
+        parent = {
+            "id": 77,
+            "entity_id": 600,
+            "entity_type": "event",
+            "name": "Parent",
+        }
+
+        def side_effect(
+            eid: int, include_posts: bool = False, _allow_child_id_fallback: bool = True
+        ):
+            if eid == 500:
+                return child
+            if eid == 600:
+                return parent
+            return None
+
+        with patch.object(self.service, "get_entity_by_id", side_effect=side_effect):
+            self.service.update_entity(
+                500,
+                parent_id=600,
+                parent_id_set=True,
+                event_parent_id=99,
+            )
+
+        self.mock_client.events.update.assert_called_once()
+        assert self.mock_client.events.update.call_args[1]["event_id"] == 99
+
+    def test_update_event_parent_id_character_parent_skips_events_patch(self):
+        child = {
+            "id": 42,
+            "entity_id": 500,
+            "entity_type": "event",
+            "name": "Child",
+        }
+        parent_char = {
+            "id": 3,
+            "entity_id": 200,
+            "entity_type": "character",
+            "name": "P",
+        }
+
+        def side_effect(
+            eid: int, include_posts: bool = False, _allow_child_id_fallback: bool = True
+        ):
+            if eid == 500:
+                return child
+            if eid == 200:
+                return parent_char
+            return None
+
+        with patch.object(self.service, "get_entity_by_id", side_effect=side_effect):
+            self.service.update_entity(500, parent_id=200, parent_id_set=True)
+
+        self.mock_client.events.update.assert_not_called()
 
     def test_update_event_calendar_id_null_is_sent(self):
         with patch.object(
@@ -423,6 +606,115 @@ class TestKankaService:
         assert self.mock_client.events.update.call_args[0][0] == 42
         assert "calendar_id" in self.mock_client.events.update.call_args[1]
         assert self.mock_client.events.update.call_args[1]["calendar_id"] is None
+
+    def test_update_event_calendar_year_month_day_maps_to_api(self):
+        with patch.object(
+            self.service,
+            "get_entity_by_id",
+            return_value={
+                "id": 42,
+                "entity_id": 500,
+                "entity_type": "event",
+                "name": "Festival",
+            },
+        ):
+            self.service.update_entity(
+                500,
+                calendar_year=5,
+                calendar_month=2,
+                calendar_day=10,
+            )
+
+        self.mock_client.events.update.assert_called_once()
+        kwargs = self.mock_client.events.update.call_args[1]
+        assert kwargs["calendar_year"] == 5
+        assert kwargs["calendar_month"] == 2
+        assert kwargs["calendar_day"] == 10
+
+    def test_update_character_status_maps_to_api_status(self):
+        with patch.object(
+            self.service,
+            "get_entity_by_id",
+            return_value={
+                "id": 15,
+                "entity_id": 150,
+                "entity_type": "character",
+                "name": "Rin",
+            },
+        ):
+            self.service.update_entity(150, status=1)
+
+        self.mock_client.characters.update.assert_called_once()
+        kwargs = self.mock_client.characters.update.call_args.kwargs
+        assert kwargs["status"] == 1
+
+    def test_create_event_event_locations_maps_to_locations(self):
+        mock_entity = Mock()
+        mock_entity.id = 9
+        mock_entity.entity_id = 90
+        mock_entity.name = "War"
+        mock_entity.type = "history"
+        mock_entity.is_private = False
+        mock_entity.tags = []
+        mock_entity.entry = None
+        mock_entity.created_at = datetime.now()
+        mock_entity.updated_at = datetime.now()
+        mock_entity.posts = None
+        self.mock_client.events.create.return_value = mock_entity
+        self.service._tag_cache = {}
+
+        self.service.create_entity(
+            entity_type="event",
+            name="War",
+            event_locations=[1, 2, 3],
+        )
+
+        kwargs = self.mock_client.events.create.call_args.kwargs
+        assert kwargs["locations"] == [1, 2, 3]
+
+    def test_create_tag_icon_colour_maps(self):
+        mock_entity = Mock()
+        mock_entity.id = 10
+        mock_entity.entity_id = 100
+        mock_entity.name = "Faction"
+        mock_entity.type = None
+        mock_entity.is_private = False
+        mock_entity.tags = []
+        mock_entity.entry = None
+        mock_entity.created_at = datetime.now()
+        mock_entity.updated_at = datetime.now()
+        mock_entity.posts = None
+        self.mock_client.tags.create.return_value = mock_entity
+        self.service._tag_cache = {}
+
+        self.service.create_entity(
+            entity_type="tag",
+            name="Faction",
+            icon="fa-solid fa-crown",
+            colour="#112233",
+        )
+
+        kwargs = self.mock_client.tags.create.call_args.kwargs
+        assert kwargs["icon"] == "fa-solid fa-crown"
+        assert kwargs["colour"] == "#112233"
+
+    def test_update_entity_parent_id_only_skips_module_patch(self):
+        with patch.object(
+            self.service,
+            "get_entity_by_id",
+            return_value={
+                "id": 42,
+                "entity_id": 500,
+                "entity_type": "event",
+                "name": "Child",
+            },
+        ):
+            self.service.update_entity(500, parent_id=321, parent_id_set=True)
+
+        self.mock_client.events.update.assert_not_called()
+        self.mock_client._request.assert_any_call(
+            "PATCH", "entities/500", json={"parent_id": 321}
+        )
 
     def test_list_calendar_events_all_merges_pages(self):
         def fake_list(calendar_id: int, page: int = 1, limit: int = 15):
@@ -561,6 +853,108 @@ class TestKankaService:
 
         with pytest.raises(ValueError, match="Entity 999 not found"):
             self.service.update_entity(entity_id=999, name="Test")
+
+    def test_resolve_timeline_module_id_from_entity_payload(self):
+        self.mock_client._request.return_value = {
+            "data": {
+                "type": "timeline",
+                "child": {"id": 44488},
+            }
+        }
+        assert self.service.resolve_timeline_module_id(9072997) == 44488
+        self.mock_client._request.assert_called_once_with(
+            "GET", "entities/9072997"
+        )
+
+    def test_update_entity_timeline_patches_timelines_endpoint(self):
+        self.service.get_entity_by_id = Mock(
+            return_value={
+                "id": 9072997,
+                "entity_id": 9072997,
+                "entity_type": "timeline",
+                "name": "Ciridan Chronicles",
+            }
+        )
+        with patch.object(
+            self.service,
+            "resolve_timeline_module_id",
+            return_value=44488,
+        ) as mock_resolve:
+            result = self.service.update_entity(
+                entity_id=9072997,
+                name="Ciridan Chronicles",
+                entry="## Overview\nTest",
+            )
+
+        assert result is True
+        mock_resolve.assert_called_once_with(9072997)
+        self.mock_client._request.assert_called_once()
+        call = self.mock_client._request.call_args
+        assert call[0][0] == "PATCH"
+        assert call[0][1] == "timelines/44488"
+        body = call[1]["json"]
+        assert body["name"] == "Ciridan Chronicles"
+        assert "<p>" in body["entry"] or body["entry"]
+
+    def test_delete_entity_timeline_deletes_timeline_module(self):
+        self.service.get_entity_by_id = Mock(
+            return_value={
+                "id": 9072997,
+                "entity_type": "timeline",
+                "name": "T",
+            }
+        )
+        with patch.object(
+            self.service,
+            "resolve_timeline_module_id",
+            return_value=44488,
+        ):
+            assert self.service.delete_entity(9072997) is True
+        self.mock_client._request.assert_called_once_with(
+            "DELETE", "timelines/44488"
+        )
+
+    def test_list_attributes_normalizes_checkbox_string_values(self):
+        self.mock_client._request.return_value = {
+            "data": [
+                {"id": 1, "type_id": 3, "value": "1"},
+                {"id": 2, "type_id": 3, "value": ""},
+                {"id": 3, "type_id": 1, "value": "text"},
+            ],
+            "meta": {},
+            "links": {},
+        }
+        out = self.service.list_attributes(entity_id=101, page=1, limit=30)
+
+        assert out["data"][0]["value"] is True
+        assert out["data"][1]["value"] is False
+        assert out["data"][2]["value"] == "text"
+
+    def test_entity_reminder_write_endpoints_use_entities_reminders(self):
+        self.mock_client._request.return_value = {"data": {"id": 1}}
+
+        self.service.create_entity_reminder(9085041, {"length": 1})
+        self.service.update_entity_reminder(9085041, 343213, {"length": 2})
+
+        self.mock_client._request.assert_any_call(
+            "POST", "entities/9085041/reminders", json={"length": 1}
+        )
+        self.mock_client._request.assert_any_call(
+            "PATCH", "entities/9085041/reminders/343213", json={"length": 2}
+        )
+
+    def test_delete_entity_reminder_uses_entities_reminders_endpoint(self):
+        mock_response = Mock()
+        mock_response.text = ""
+        self.mock_client.session.request.return_value = mock_response
+
+        out = self.service.delete_entity_reminder(9085041, 343213)
+
+        assert out == {"success": True}
+        self.mock_client.session.request.assert_called_once()
+        args = self.mock_client.session.request.call_args[0]
+        assert args[0] == "DELETE"
+        assert args[1].endswith("/entities/9085041/reminders/343213")
 
     def test_delete_entity(self):
         """Test deleting an entity."""

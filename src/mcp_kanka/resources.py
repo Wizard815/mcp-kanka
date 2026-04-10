@@ -46,7 +46,7 @@ def get_kanka_context() -> str:
             "examples": ["[entity:1234]", "[entity:1234|the ancient dragon]"],
             "note": "The MCP server preserves these during Markdown/HTML conversion",
         },
-        "limitations": "Some entity-specific fields/endpoints are not exposed. The server focuses on doc-verified core CRUD plus common sub-resources via `manage_*` tools (attributes, entity tags, inventory, permissions), and selected map/timeline/calendar/entity-image operations.",
+        "limitations": "Some entity-specific fields/endpoints are not exposed. The server focuses on doc-verified core CRUD plus common sub-resources via `manage_*` tools (attributes, entity tags, inventory, permissions), and selected map/timeline/calendar/entity-image operations. Timeline **entities** support `update_entities` / `delete_entity` via the timelines API (module id resolved from the entity).",
     }
 
     return json.dumps(context, indent=2)

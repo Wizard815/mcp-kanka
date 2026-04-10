@@ -369,8 +369,10 @@ class KankaOperations:
                     entry=entity_input.get("entry"),
                     tags=entity_input.get("tags"),
                     is_hidden=entity_input.get("is_hidden"),
+                    parent_id=entity_input.get("parent_id"),
                     location_id=entity_input.get("location_id"),
                     parent_location_id=entity_input.get("parent_location_id"),
+                    status=entity_input.get("status"),
                     title=entity_input.get("title"),
                     age=entity_input.get("age"),
                     sex=entity_input.get("sex"),
@@ -402,6 +404,9 @@ class KankaOperations:
                     calendar_month=entity_input.get("calendar_month"),
                     calendar_day=entity_input.get("calendar_day"),
                     event_parent_id=entity_input.get("event_parent_id"),
+                    event_locations=entity_input.get("event_locations"),
+                    icon=entity_input.get("icon"),
+                    colour=entity_input.get("colour"),
                 )
 
                 result: CreateEntityResult = {
@@ -465,8 +470,11 @@ class KankaOperations:
                     entry=update.get("entry"),
                     tags=update.get("tags"),
                     is_hidden=update.get("is_hidden"),
+                    parent_id=update.get("parent_id"),
+                    parent_id_set=("parent_id" in update),
                     location_id=update.get("location_id"),
                     parent_location_id=update.get("parent_location_id"),
+                    status=update.get("status"),
                     title=update.get("title"),
                     age=update.get("age"),
                     sex=update.get("sex"),
@@ -494,8 +502,14 @@ class KankaOperations:
                     image_uuid=update.get("image_uuid"),
                     header_uuid=update.get("header_uuid"),
                     event_parent_id=update.get("event_parent_id"),
+                    event_locations=update.get("event_locations"),
                     calendar_id=update.get("calendar_id"),
                     calendar_id_set=("calendar_id" in update),
+                    calendar_year=update.get("calendar_year"),
+                    calendar_month=update.get("calendar_month"),
+                    calendar_day=update.get("calendar_day"),
+                    icon=update.get("icon"),
+                    colour=update.get("colour"),
                 )
 
                 result: UpdateEntityResult = {
@@ -601,6 +615,9 @@ class KankaOperations:
                 result["image_thumb"] = entity.get("image_thumb")
                 result["image_uuid"] = entity.get("image_uuid")
                 result["header_uuid"] = entity.get("header_uuid")
+
+                if "parent_id" in entity:
+                    result["parent_id"] = entity.get("parent_id")
 
                 if include_posts:
                     result["posts"] = entity.get("posts", [])
@@ -1882,8 +1899,11 @@ class KankaOperations:
                         entry=fields.get("entry"),
                         tags=fields.get("tags"),
                         is_hidden=fields.get("is_hidden"),
+                        parent_id=fields.get("parent_id"),
+                        parent_id_set=("parent_id" in fields),
                         location_id=fields.get("location_id"),
                         parent_location_id=fields.get("parent_location_id"),
+                        status=fields.get("status"),
                         title=fields.get("title"),
                         age=fields.get("age"),
                         sex=fields.get("sex"),
@@ -1911,8 +1931,14 @@ class KankaOperations:
                         image_uuid=fields.get("image_uuid"),
                         header_uuid=fields.get("header_uuid"),
                         event_parent_id=fields.get("event_parent_id"),
+                        event_locations=fields.get("event_locations"),
                         calendar_id=fields.get("calendar_id"),
                         calendar_id_set=("calendar_id" in fields),
+                        calendar_year=fields.get("calendar_year"),
+                        calendar_month=fields.get("calendar_month"),
+                        calendar_day=fields.get("calendar_day"),
+                        icon=fields.get("icon"),
+                        colour=fields.get("colour"),
                     )
                     results.append(
                         {
@@ -1937,8 +1963,10 @@ class KankaOperations:
                         entry=fields.get("entry"),
                         tags=fields.get("tags"),
                         is_hidden=fields.get("is_hidden"),
+                        parent_id=fields.get("parent_id"),
                         location_id=fields.get("location_id"),
                         parent_location_id=fields.get("parent_location_id"),
+                        status=fields.get("status"),
                         title=fields.get("title"),
                         age=fields.get("age"),
                         sex=fields.get("sex"),
@@ -1970,6 +1998,9 @@ class KankaOperations:
                         calendar_month=fields.get("calendar_month"),
                         calendar_day=fields.get("calendar_day"),
                         event_parent_id=fields.get("event_parent_id"),
+                        event_locations=fields.get("event_locations"),
+                        icon=fields.get("icon"),
+                        colour=fields.get("colour"),
                     )
                     results.append({"step": i, "op": op, "success": True, "data": data})
                 elif op == "create_post":

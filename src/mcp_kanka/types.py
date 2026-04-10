@@ -1,6 +1,6 @@
 """Type definitions for the Kanka MCP server."""
 
-from typing import Literal, NotRequired, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 # Supported entity types
 EntityType = Literal[
@@ -21,6 +21,7 @@ EntityType = Literal[
     "race",
     "note",
     "quest",
+    "tag",
     "timeline",
 ]
 
@@ -60,6 +61,8 @@ class EntityInput(TypedDict):
     entry: str | None
     tags: list[str] | None
     is_hidden: bool | None
+    # 3.10 nesting: global parent entity id (`entities/{id}`), not module child id.
+    parent_id: NotRequired[int | None]
     # Location-specific: parent Location child_id (the Location module `id`, not an entity_id)
     location_id: int | None
     # Event-specific: calendar child id (calendars/{calendar.id}) and in-world date (events create)
@@ -69,7 +72,10 @@ class EntityInput(TypedDict):
     calendar_day: NotRequired[int | None]
     # Event-specific: parent Event module child id (events/{id}); sent to API as `event_id`
     event_parent_id: NotRequired[int | None]
+    # Event-specific: multiple linked location child ids
+    event_locations: NotRequired[list[int] | None]
     # Character-specific
+    status: NotRequired[int | None]
     title: NotRequired[str | None]
     age: NotRequired[str | None]
     sex: NotRequired[str | None]
@@ -104,6 +110,9 @@ class EntityInput(TypedDict):
     # Map-specific
     map_id: NotRequired[int | None]
     is_real: NotRequired[bool | None]
+    # Tag-specific
+    icon: NotRequired[str | None]
+    colour: NotRequired[str | None]
 
 
 class CreateEntitiesParams(TypedDict):
@@ -121,13 +130,22 @@ class EntityUpdate(TypedDict):
     entry: str | None
     tags: list[str] | None
     is_hidden: bool | None
+    # 3.10 nesting: global parent entity id (`entities/{id}`), not module child id.
+    parent_id: NotRequired[int | None]
     # Location-specific: parent Location child_id (the Location module `id`, not an entity_id)
     location_id: int | None
     # Event-specific: parent Event module child id; sent to API as `event_id`
     event_parent_id: NotRequired[int | None]
+    # Event-specific: multiple linked location child ids
+    event_locations: NotRequired[list[int] | None]
     # Event-specific: calendar child id (nullable). Include key with null to detach event from calendar.
     calendar_id: NotRequired[int | None]
+    # Event-specific: in-world date on that calendar (updates PATCH events/{id})
+    calendar_year: NotRequired[int | None]
+    calendar_month: NotRequired[int | None]
+    calendar_day: NotRequired[int | None]
     # Character-specific
+    status: NotRequired[int | None]
     title: NotRequired[str | None]
     age: NotRequired[str | None]
     sex: NotRequired[str | None]
@@ -160,6 +178,9 @@ class EntityUpdate(TypedDict):
     # Map-specific
     map_id: NotRequired[int | None]
     is_real: NotRequired[bool | None]
+    # Tag-specific
+    icon: NotRequired[str | None]
+    colour: NotRequired[str | None]
 
 
 class UpdateEntitiesParams(TypedDict):
@@ -252,6 +273,12 @@ class EntityFull(TypedDict, total=False):
     updated_at: str  # ISO 8601 timestamp
     match_score: float | None  # Only when name_fuzzy=true
     is_completed: bool | None  # For quests only
+    status: int | None  # Character/quest status code
+    title: str | None  # Character/location title
+    locations: list[int] | list[dict[str, Any]] | None  # Event-linked locations
+    icon: str | None  # Tag icon
+    colour: str | None  # Tag colour
+    parent_id: int | None  # 3.10 entity-level parent
     image: str | None  # Local path to the picture
     image_full: str | None  # URL to the full picture
     image_thumb: str | None  # URL to the thumbnail
@@ -328,6 +355,12 @@ class GetEntityResult(TypedDict, total=False):
     success: bool
     error: str | None
     is_completed: bool | None  # For quests only
+    status: int | None  # Character/quest status code
+    title: str | None  # Character/location title
+    locations: list[int] | list[dict[str, Any]] | None  # Event-linked locations
+    icon: str | None  # Tag icon
+    colour: str | None  # Tag colour
+    parent_id: int | None  # 3.10 entity-level parent
     image: str | None  # Local path to the picture
     image_full: str | None  # URL to the full picture
     image_thumb: str | None  # URL to the thumbnail

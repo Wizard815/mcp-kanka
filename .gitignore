@@ -90,6 +90,10 @@ kanka_events.json
 scripts/
 agent-tools/
 
+# Local campaign exports / reports (IDs, structure — do not publish)
+exports/
+reports/
+
 # Ruff
 .ruff_cache/
 

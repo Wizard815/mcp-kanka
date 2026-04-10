@@ -58,6 +58,7 @@ class KankaService:
         "note": "notes",
         "journal": "journals",
         "quest": "quests",
+        "tag": "tags",
         "bookmark": "bookmarks",
         "attribute": "attributes",
     }
@@ -158,17 +159,17 @@ class KankaService:
     def global_search_entities(
         self, search_term: str, page: int = 1
     ) -> list[dict[str, Any]]:
-        """Global search across entity types (GET search/{search_term})."""
-        try:
-            results = self.client.search(search_term, page=page)
-        except Exception as e:
-            logger.warning(
-                "SDK global search failed (%s). Falling back to raw search endpoint.",
-                e,
-            )
-            raw = self.client._request("GET", f"search/{search_term}", params={"page": page})
-            rows = raw.get("data", raw)
-            results = rows if isinstance(rows, list) else []
+        """Global search across entity types (GET search/{search_term}).
+
+        Uses the raw HTTP response instead of ``KankaClient.search()`` so rows
+        without ``entity_id`` (e.g. some maps/calendars) do not fail pydantic
+        validation for the entire result set.
+        """
+        raw = self.client._request(
+            "GET", f"search/{search_term}", params={"page": page}
+        )
+        rows = raw.get("data", raw)
+        results = rows if isinstance(rows, list) else []
 
         formatted: list[dict[str, Any]] = []
         for r in results:
@@ -562,6 +563,11 @@ class KankaService:
                     )
                     result["posts"] = []
 
+            # SDK module objects often omit entity-level nesting; merge from /entities payload.
+            if result is not None and isinstance(found_entity, dict):
+                if "parent_id" in found_entity:
+                    result["parent_id"] = found_entity.get("parent_id")
+
             return result
 
         except Exception as e:
@@ -629,8 +635,10 @@ class KankaService:
         entry: str | None = None,
         tags: list[str] | None = None,
         is_hidden: bool | None = None,
+        parent_id: int | None = None,
         location_id: int | None = None,
         parent_location_id: int | None = None,
+        status: int | None = None,
         title: str | None = None,
         age: str | None = None,
         sex: str | None = None,
@@ -662,6 +670,9 @@ class KankaService:
         calendar_month: int | None = None,
         calendar_day: int | None = None,
         event_parent_id: int | None = None,
+        event_locations: list[int] | None = None,
+        icon: str | None = None,
+        colour: str | None = None,
     ) -> dict[str, Any]:
         """
         Create a new entity.
@@ -673,6 +684,7 @@ class KankaService:
             entry: Description in Markdown
             tags: List of tag names
             is_hidden: Whether entity should be hidden from players (admin-only)
+            parent_id: Parent global entity id for 3.10 nesting (`entities/{id}`).
             is_completed: Whether quest is completed (quests only)
             image_uuid: Image gallery UUID for entity image
             header_uuid: Image gallery UUID for entity header
@@ -715,6 +727,8 @@ class KankaService:
                 data["tags"] = tag_ids
 
             if entity_type == "character":
+                if status is not None:
+                    data["status"] = status
                 if title is not None:
                     data["title"] = title
                 if age is not None:
@@ -774,6 +788,8 @@ class KankaService:
                     data["quest_id"] = quest_id
                 if character_id is not None:
                     data["character_id"] = character_id
+                if status is not None:
+                    data["status"] = status
                 if is_completed is not None:
                     data["is_completed"] = is_completed
 
@@ -803,6 +819,8 @@ class KankaService:
                     data["date"] = date
                 if location_id is not None:
                     data["location_id"] = location_id
+                if event_locations is not None:
+                    data["locations"] = event_locations
                 if calendar_id is not None:
                     data["calendar_id"] = calendar_id
                 if calendar_year is not None:
@@ -811,9 +829,15 @@ class KankaService:
                     data["calendar_month"] = calendar_month
                 if calendar_day is not None:
                     data["calendar_day"] = calendar_day
-                # Parent event: Kanka model uses `event_id` (parent key), not entity_id
-                if event_parent_id is not None:
-                    data["event_id"] = event_parent_id
+                # Calendar hierarchy uses `event_id` (events/{id}). Resolve from global
+                # parent_id when the parent is also an event (unless event_parent_id set).
+                resolved_ep = event_parent_id
+                if resolved_ep is None and parent_id is not None:
+                    resolved_ep = self._event_parent_module_id_for_global_parent(
+                        parent_id
+                    )
+                if resolved_ep is not None:
+                    data["event_id"] = resolved_ep
 
             if entity_type == "map":
                 if map_id is not None:
@@ -822,6 +846,12 @@ class KankaService:
                     data["location_id"] = location_id
                 if is_real is not None:
                     data["is_real"] = is_real
+
+            if entity_type == "tag":
+                if icon is not None:
+                    data["icon"] = icon
+                if colour is not None:
+                    data["colour"] = colour
 
             # Handle image fields
             if image_uuid is not None:
@@ -835,6 +865,11 @@ class KankaService:
             # Convert to our format
             result = self._entity_to_dict(entity, entity_type)
             result["mention"] = f"[entity:{entity.entity_id}]"
+
+            # 3.10 nesting is tracked on the entity itself, not module rows.
+            if parent_id is not None:
+                self._set_entity_parent(entity.entity_id, parent_id)
+                result["parent_id"] = parent_id
 
             # If we explicitly set privacy, ensure it's reflected in the result
             # The API might not return is_private in the create response
@@ -855,8 +890,11 @@ class KankaService:
         entry: str | None = None,
         tags: list[str] | None = None,
         is_hidden: bool | None = None,
+        parent_id: int | None = None,
+        parent_id_set: bool = False,
         location_id: int | None = None,
         parent_location_id: int | None = None,
+        status: int | None = None,
         title: str | None = None,
         age: str | None = None,
         sex: str | None = None,
@@ -884,8 +922,14 @@ class KankaService:
         image_uuid: str | None = None,
         header_uuid: str | None = None,
         event_parent_id: int | None = None,
+        event_locations: list[int] | None = None,
         calendar_id: int | None = None,
         calendar_id_set: bool = False,
+        calendar_year: int | None = None,
+        calendar_month: int | None = None,
+        calendar_day: int | None = None,
+        icon: str | None = None,
+        colour: str | None = None,
     ) -> bool:
         """
         Update an existing entity.
@@ -897,12 +941,17 @@ class KankaService:
             entry: Description in Markdown
             tags: List of tag names
             is_hidden: Whether entity should be hidden from players (admin-only)
+            parent_id: Parent global entity id for 3.10 nesting (`entities/{id}`).
+            parent_id_set: Whether ``parent_id`` was explicitly provided by caller.
             is_completed: Whether quest is completed (quests only)
             image_uuid: Image gallery UUID for entity image
             header_uuid: Image gallery UUID for entity header
             event_parent_id: Parent event module child id (events only). API field is ``event_id``.
             calendar_id: Calendar child id for events. Can be None when detaching.
             calendar_id_set: Whether ``calendar_id`` was explicitly provided by caller.
+            calendar_year: In-world year on that calendar (events only).
+            calendar_month: In-world month (events only).
+            calendar_day: In-world day (events only).
 
         Returns:
             True if successful
@@ -914,6 +963,49 @@ class KankaService:
                 raise ValueError(f"Entity {entity_id} not found")
 
             entity_type = entity_data["entity_type"]
+
+            def looks_like_name_required_error(exc: Exception) -> bool:
+                text = str(exc).lower()
+                return "name" in text and (
+                    "required" in text or "missing" in text or "must" in text
+                )
+
+            # Timelines are not exposed on KankaClient; PATCH timelines/{module_id}.
+            if entity_type == "timeline":
+                module_id = self.resolve_timeline_module_id(entity_id)
+                data_tl: dict[str, Any] = {}
+                if name is not None:
+                    data_tl["name"] = name
+                if type is not None:
+                    data_tl["type"] = type
+                if entry is not None:
+                    data_tl["entry"] = self.converter.markdown_to_html(entry)
+                if is_hidden is not None:
+                    data_tl["is_private"] = is_hidden
+                if tags is not None:
+                    data_tl["tags"] = self._get_or_create_tag_ids(tags)
+                if image_uuid is not None:
+                    data_tl["entity_image_uuid"] = image_uuid
+                if header_uuid is not None:
+                    data_tl["entity_header_uuid"] = header_uuid
+                if data_tl:
+                    try:
+                        self.client._request(
+                            "PATCH", f"timelines/{module_id}", json=data_tl
+                        )
+                    except KankaException as exc:
+                        if name is None and looks_like_name_required_error(exc):
+                            retry_tl = dict(data_tl)
+                            retry_tl["name"] = entity_data["name"]
+                            self.client._request(
+                                "PATCH", f"timelines/{module_id}", json=retry_tl
+                            )
+                        else:
+                            raise
+                if parent_id_set:
+                    self._set_entity_parent(entity_id, parent_id)
+                return True
+
             manager = getattr(self.client, self.API_ENDPOINT_MAP[entity_type])
 
             # Prepare update data
@@ -939,6 +1031,8 @@ class KankaService:
                 data["tags"] = tag_ids
 
             if entity_type == "character":
+                if status is not None:
+                    data["status"] = status
                 if title is not None:
                     data["title"] = title
                 if age is not None:
@@ -992,9 +1086,24 @@ class KankaService:
                 if character_id is not None:
                     data["character_id"] = character_id
 
-            # Handle event parent (API uses `event_id` for the parent event module row)
-            if entity_type == "event" and event_parent_id is not None:
-                data["event_id"] = event_parent_id
+            # Event calendar hierarchy: `event_id` is the parent event's module row id.
+            # If the caller set global `parent_id` to another event's entity_id but did not
+            # pass `event_parent_id`, resolve module id so the calendar nests correctly.
+            resolved_event_parent: int | None
+            if event_parent_id is not None:
+                resolved_event_parent = event_parent_id
+            elif (
+                entity_type == "event"
+                and parent_id_set
+                and parent_id is not None
+            ):
+                resolved_event_parent = self._event_parent_module_id_for_global_parent(
+                    parent_id
+                )
+            else:
+                resolved_event_parent = None
+            if entity_type == "event" and resolved_event_parent is not None:
+                data["event_id"] = resolved_event_parent
             # Handle event calendar linkage. Explicit null should be sent when requested.
             if entity_type == "event" and calendar_id_set:
                 data["calendar_id"] = calendar_id
@@ -1005,6 +1114,8 @@ class KankaService:
                     data["quest_id"] = quest_id
                 if character_id is not None:
                     data["character_id"] = character_id
+                if status is not None:
+                    data["status"] = status
                 if is_completed is not None:
                     data["is_completed"] = is_completed
 
@@ -1033,6 +1144,14 @@ class KankaService:
                     data["date"] = date
                 if location_id is not None:
                     data["location_id"] = location_id
+                if event_locations is not None:
+                    data["locations"] = event_locations
+                if calendar_year is not None:
+                    data["calendar_year"] = calendar_year
+                if calendar_month is not None:
+                    data["calendar_month"] = calendar_month
+                if calendar_day is not None:
+                    data["calendar_day"] = calendar_day
 
             if entity_type == "map":
                 if map_id is not None:
@@ -1042,29 +1161,34 @@ class KankaService:
                 if is_real is not None:
                     data["is_real"] = is_real
 
+            if entity_type == "tag":
+                if icon is not None:
+                    data["icon"] = icon
+                if colour is not None:
+                    data["colour"] = colour
+
             # Handle image fields
             if image_uuid is not None:
                 data["image_uuid"] = image_uuid
             if header_uuid is not None:
                 data["header_uuid"] = header_uuid
 
-            def looks_like_name_required_error(exc: Exception) -> bool:
-                text = str(exc).lower()
-                return "name" in text and (
-                    "required" in text or "missing" in text or "must" in text
-                )
+            # Update module row only when module fields are present.
+            if data:
+                try:
+                    manager.update(entity_data["id"], **data)
+                except KankaException as exc:
+                    # Fallback: some endpoints may still validate `name` even when PATCH is used.
+                    if name is None and looks_like_name_required_error(exc):
+                        retry_data = dict(data)
+                        retry_data["name"] = entity_data["name"]
+                        manager.update(entity_data["id"], **retry_data)
+                    else:
+                        raise
 
-            # Update entity
-            try:
-                manager.update(entity_data["id"], **data)
-            except KankaException as exc:
-                # Fallback: some endpoints may still validate `name` even when PATCH is used.
-                if name is None and looks_like_name_required_error(exc):
-                    retry_data = dict(data)
-                    retry_data["name"] = entity_data["name"]
-                    manager.update(entity_data["id"], **retry_data)
-                else:
-                    raise
+            # 3.10 nesting is tracked on entities.
+            if parent_id_set:
+                self._set_entity_parent(entity_id, parent_id)
             return True
 
         except Exception as e:
@@ -1088,6 +1212,11 @@ class KankaService:
                 raise ValueError(f"Entity {entity_id} not found")
 
             entity_type = entity_data["entity_type"]
+            if entity_type == "timeline":
+                module_id = self.resolve_timeline_module_id(entity_id)
+                self.client._request("DELETE", f"timelines/{module_id}")
+                return True
+
             manager = getattr(self.client, self.API_ENDPOINT_MAP[entity_type])
 
             # Delete entity
@@ -1373,6 +1502,29 @@ class KankaService:
     # ----------------------------
     # Timeline element operations
     # ----------------------------
+    def resolve_timeline_module_id(self, campaign_entity_id: int) -> int:
+        """
+        Map a timeline's global campaign entity id to the timelines API child id.
+
+        Sub-resources (eras, elements) use ``timelines/{timeline_module_id}/…``, not
+        ``/entities/{entity_id}``. The module id is returned on ``GET entities/{id}``
+        as ``child.id`` when the entity type is ``timeline``.
+        """
+        resp = self.client._request("GET", f"entities/{campaign_entity_id}")
+        payload = resp.get("data", resp)
+        api_type = payload.get("type") or payload.get("entity_type")
+        if api_type != "timeline":
+            raise ValueError(
+                f"Entity {campaign_entity_id} is not a timeline (type={api_type!r})"
+            )
+        child = payload.get("child") or {}
+        tid = child.get("id")
+        if not isinstance(tid, int):
+            raise ValueError(
+                f"Could not resolve timeline module id for entity {campaign_entity_id}"
+            )
+        return tid
+
     def list_timeline_elements(
         self, timeline_id: int, page: int = 1, limit: int = 15
     ) -> dict[str, Any]:
@@ -1468,12 +1620,54 @@ class KankaService:
     # ----------------------------
     # Entity attribute properties
     # ----------------------------
+    @staticmethod
+    def _normalize_attribute_checkbox_values(response: dict[str, Any]) -> dict[str, Any]:
+        rows = response.get("data")
+        if not isinstance(rows, list):
+            return response
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if row.get("type_id") != 3:
+                continue
+            value = row.get("value")
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, str):
+                lowered = value.strip().lower()
+                if lowered in {"1", "true", "yes", "on"}:
+                    row["value"] = True
+                    continue
+                if lowered in {"0", "false", "no", "off", ""}:
+                    row["value"] = False
+                    continue
+            if isinstance(value, int):
+                row["value"] = value != 0
+        return response
+
+    def _event_parent_module_id_for_global_parent(
+        self, parent_global_entity_id: int
+    ) -> int | None:
+        """Map parent's global entity_id to events/{id} when parent is an event."""
+        parent_row = self.get_entity_by_id(parent_global_entity_id)
+        if not parent_row or parent_row.get("entity_type") != "event":
+            return None
+        # Ignore mismatched payloads (e.g. tests or bad caches returning the wrong row).
+        if parent_row.get("entity_id") != parent_global_entity_id:
+            return None
+        mid = parent_row.get("id")
+        return mid if isinstance(mid, int) else None
+
+    def _set_entity_parent(self, entity_id: int, parent_id: int | None) -> None:
+        self.raw_request("PATCH", f"entities/{entity_id}", json={"parent_id": parent_id})
+
     def list_attributes(
         self, entity_id: int, page: int = 1, limit: int = 30
     ) -> dict[str, Any]:
         endpoint = f"entities/{entity_id}/attributes"
         params: dict[str, Any] = {"page": page, "limit": limit}
-        return self.raw_request("GET", endpoint, params=params)
+        response = self.raw_request("GET", endpoint, params=params)
+        return self._normalize_attribute_checkbox_values(response)
 
     def create_attribute(
         self, entity_id: int, payload: dict[str, Any]
@@ -1770,17 +1964,17 @@ class KankaService:
     def create_entity_reminder(
         self, entity_id: int, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        endpoint = f"entities/{entity_id}/entity_events"
+        endpoint = f"entities/{entity_id}/reminders"
         return self.raw_request("POST", endpoint, json=payload)
 
     def update_entity_reminder(
         self, entity_id: int, reminder_id: int, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        endpoint = f"entities/{entity_id}/entity_events/{reminder_id}"
+        endpoint = f"entities/{entity_id}/reminders/{reminder_id}"
         return self.raw_request("PATCH", endpoint, json=payload)
 
     def delete_entity_reminder(self, entity_id: int, reminder_id: int) -> dict[str, Any]:
-        endpoint = f"entities/{entity_id}/entity_events/{reminder_id}"
+        endpoint = f"entities/{entity_id}/reminders/{reminder_id}"
         url = f"{self.client.BASE_URL}/campaigns/{self.client.campaign_id}/{endpoint}"
         resp = self.client.session.request("DELETE", url)
         if not resp.text:
@@ -1963,6 +2157,24 @@ class KankaService:
         # Handle quest-specific fields
         if entity_type == "quest":
             result["is_completed"] = getattr(entity, "is_completed", None)
+            result["status"] = getattr(entity, "status", None)
+
+        if entity_type == "character":
+            result["status"] = getattr(entity, "status", None)
+            result["title"] = getattr(entity, "title", None)
+
+        if entity_type == "location":
+            result["title"] = getattr(entity, "title", None)
+
+        if entity_type == "event":
+            result["locations"] = getattr(entity, "locations", None)
+
+        if entity_type == "tag":
+            result["icon"] = getattr(entity, "icon", None)
+            result["colour"] = getattr(entity, "colour", None)
+
+        if hasattr(entity, "parent_id"):
+            result["parent_id"] = getattr(entity, "parent_id", None)
 
         # Handle image fields - always include all 5 fields
         result["image"] = getattr(entity, "image", None)
@@ -2042,6 +2254,24 @@ class KankaService:
         # Handle quest-specific fields
         if entity_type == "quest":
             result["is_completed"] = entity.get("is_completed")
+            result["status"] = entity.get("status")
+
+        if entity_type == "character":
+            result["status"] = entity.get("status")
+            result["title"] = entity.get("title")
+
+        if entity_type == "location":
+            result["title"] = entity.get("title")
+
+        if entity_type == "event":
+            result["locations"] = entity.get("locations")
+
+        if entity_type == "tag":
+            result["icon"] = entity.get("icon")
+            result["colour"] = entity.get("colour")
+
+        if "parent_id" in entity:
+            result["parent_id"] = entity.get("parent_id")
 
         # Image fields
         result["image"] = entity.get("image")

@@ -114,6 +114,7 @@ async def list_tools() -> list[types.Tool]:
                             "bookmark",
                             "quest",
                             "attribute",
+                            "tag",
                             "timeline",
                             "calendar",
                         ],
@@ -226,6 +227,7 @@ async def list_tools() -> list[types.Tool]:
                                         "bookmark",
                                         "quest",
                                         "attribute",
+                                        "tag",
                                     ],
                                     "description": "Entity type",
                                 },
@@ -241,6 +243,11 @@ async def list_tools() -> list[types.Tool]:
                                     "type": "string",
                                     "description": "Description (Markdown accepted; auto-converted to HTML for API)",
                                 },
+                                "parent_id": {
+                                    "type": "integer",
+                                    "description": "3.10 nesting: parent global entity id (`entities/{id}`), not module child id. "
+                                    "For events: if the parent is also an event, the MCP also sets API `event_id` on create (unless `event_parent_id` is set).",
+                                },
                                 "location_id": {
                                     "type": "integer",
                                     "description": "Location child id (module id, not entity_id). Meaning depends on entity type.",
@@ -250,6 +257,7 @@ async def list_tools() -> list[types.Tool]:
                                     "description": "Locations only: parent location child id (mapped to API `location_id`).",
                                 },
                                 "title": {"type": "string"},
+                                "status": {"type": "integer"},
                                 "age": {"type": "string"},
                                 "sex": {"type": "string"},
                                 "pronouns": {"type": "string"},
@@ -307,6 +315,13 @@ async def list_tools() -> list[types.Tool]:
                                     "type": "integer",
                                     "description": "Events only. Parent event module child id (events/{id}, NOT entity_id). Sent to the API as `event_id`.",
                                 },
+                                "event_locations": {
+                                    "type": "array",
+                                    "items": {"type": "integer"},
+                                    "description": "Events only: linked location child ids (3.10 multi-location support).",
+                                },
+                                "icon": {"type": "string"},
+                                "colour": {"type": "string"},
                             },
                             "required": ["entity_type", "name"],
                         },
@@ -317,7 +332,8 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="update_entities",
-            description="Update one or more entities",
+            description="Update one or more entities. Timelines are supported: PATCH is sent to "
+            "`timelines/{module_id}` (module id resolved from the entity via `GET entities/{id}` → `child.id`).",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -342,6 +358,11 @@ async def list_tools() -> list[types.Tool]:
                                     "type": "string",
                                     "description": "Content (Markdown accepted; auto-converted to HTML for API)",
                                 },
+                                "parent_id": {
+                                    "type": ["integer", "null"],
+                                    "description": "3.10 nesting: parent global entity id (`entities/{id}`). Set null to detach from parent. "
+                                    "For events: if the parent is also an event, the MCP also sets API `event_id` so calendar hierarchy updates (unless you override with `event_parent_id`).",
+                                },
                                 "location_id": {
                                     "type": "integer",
                                     "description": "Location child id (module id, not entity_id). Meaning depends on entity type.",
@@ -351,6 +372,7 @@ async def list_tools() -> list[types.Tool]:
                                     "description": "Locations only: parent location child id (mapped to API `location_id`).",
                                 },
                                 "title": {"type": "string"},
+                                "status": {"type": "integer"},
                                 "age": {"type": "string"},
                                 "sex": {"type": "string"},
                                 "pronouns": {"type": "string"},
@@ -386,6 +408,25 @@ async def list_tools() -> list[types.Tool]:
                                     "type": ["integer", "null"],
                                     "description": "Events only. Calendar child id; set to null to detach event from calendar.",
                                 },
+                                "calendar_year": {
+                                    "type": "integer",
+                                    "description": "Events only. In-world year on that calendar (PATCH events/{id}).",
+                                },
+                                "calendar_month": {
+                                    "type": "integer",
+                                    "description": "Events only. In-world month.",
+                                },
+                                "calendar_day": {
+                                    "type": "integer",
+                                    "description": "Events only. In-world day.",
+                                },
+                                "event_locations": {
+                                    "type": "array",
+                                    "items": {"type": "integer"},
+                                    "description": "Events only: linked location child ids (3.10 multi-location support).",
+                                },
+                                "icon": {"type": "string"},
+                                "colour": {"type": "string"},
                             },
                             "required": ["entity_id"],
                         },
@@ -750,7 +791,8 @@ async def list_tools() -> list[types.Tool]:
                     },
                     "timeline_id": {
                         "type": "integer",
-                        "description": "Timeline child id from `/timelines/{id}` (used in `timelines/{timeline.id}` path), not `/entities/{id}`. Discover via `find_entities` with `entity_type=\"timeline\"`.",
+                        "description": "Timeline **module** id for `timelines/{id}/…` (not the browser entity id). "
+                        "Resolve with `GET entities/{entity_id}` → `data.child.id`, or list `GET …/timelines`.",
                     },
                     "era_id": {
                         "type": "integer",
@@ -812,7 +854,8 @@ async def list_tools() -> list[types.Tool]:
                     },
                     "timeline_id": {
                         "type": "integer",
-                        "description": "Timeline child id from `/timelines/{id}` (used in `timelines/{timeline.id}` path), not `/entities/{id}`. Discover via `find_entities` with `entity_type=\"timeline\"`.",
+                        "description": "Timeline **module** id for `timelines/{id}/…` (not the browser entity id). "
+                        "Resolve with `GET entities/{entity_id}` → `data.child.id`, or list `GET …/timelines`.",
                     },
                     "element_id": {
                         "type": "integer",
@@ -1215,7 +1258,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="manage_calendar_events",
-            description="Manage calendar reminders (list/create/update/delete). List uses calendar reminders; writes use entity_events endpoints.",
+            description="Manage calendar reminders (list/create/update/delete). List uses calendars/{id}/reminders; writes use entities/{entity_id}/reminders endpoints.",
             inputSchema={
                 "type": "object",
                 "properties": {
