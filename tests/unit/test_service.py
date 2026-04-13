@@ -336,21 +336,30 @@ class TestKankaService:
         assert kwargs["status"] == 2
 
     def test_update_location_parent_location_id_maps_to_api_location_id(self):
+        """Parent location module id resolves to global entity_id; nesting is PATCH entities only."""
         with patch.object(
-            self.service,
-            "get_entity_by_id",
-            return_value={
-                "id": 18,
-                "entity_id": 180,
-                "entity_type": "location",
-                "name": "District",
-            },
-        ):
-            self.service.update_entity(180, parent_location_id=9, is_map_private=True)
+            self.service, "module_child_id_to_global_entity", return_value=909
+        ) as m_mod:
+            with patch.object(self.service, "_set_entity_parent") as m_set:
+                with patch.object(
+                    self.service,
+                    "get_entity_by_id",
+                    return_value={
+                        "id": 18,
+                        "entity_id": 180,
+                        "entity_type": "location",
+                        "name": "District",
+                    },
+                ):
+                    self.service.update_entity(
+                        180, parent_location_id=9, is_map_private=True
+                    )
 
+        m_mod.assert_called_once_with("location", 9)
+        m_set.assert_called_once_with(180, 909, "District")
         self.mock_client.locations.update.assert_called_once()
         kwargs = self.mock_client.locations.update.call_args.kwargs
-        assert kwargs["location_id"] == 9
+        assert "location_id" not in kwargs
         assert kwargs["is_map_private"] is True
 
     def test_create_event_with_calendar_fields(self):
@@ -389,7 +398,7 @@ class TestKankaService:
         assert kwargs["calendar_day"] == 30
 
     def test_create_event_event_parent_id_maps_to_api_event_id(self):
-        """MCP event_parent_id is sent as Kanka's event_id (parent module child id)."""
+        """event_parent_id resolves to global parent entity_id; nesting is PATCH entities only."""
         mock_entity = Mock()
         mock_entity.id = 6
         mock_entity.entity_id = 66
@@ -404,19 +413,25 @@ class TestKankaService:
         self.mock_client.events.create.return_value = mock_entity
         self.service._tag_cache = {}
 
-        self.service.create_entity(
-            entity_type="event",
-            name="Child",
-            type="session",
-            event_parent_id=99,
-        )
+        with patch.object(
+            self.service, "module_child_id_to_global_entity", return_value=555
+        ) as m_mod:
+            with patch.object(self.service, "_set_entity_parent") as m_set:
+                self.service.create_entity(
+                    entity_type="event",
+                    name="Child",
+                    type="session",
+                    event_parent_id=99,
+                )
 
+        m_mod.assert_called_once_with("event", 99)
+        m_set.assert_called_once_with(66, 555, "Child")
         kwargs = self.mock_client.events.create.call_args.kwargs
-        assert kwargs["event_id"] == 99
+        assert "event_id" not in kwargs
         assert "calendar_id" not in kwargs
 
-    def test_create_entity_parent_id_patches_entity_parent(self):
-        """3.10 nesting: parent is tracked on the entity row."""
+    def test_create_event_parent_id_sets_entity_row_parent(self):
+        """Global parent_id on create is applied via PATCH entities (no events.event_id)."""
         mock_entity = Mock()
         mock_entity.id = 6
         mock_entity.entity_id = 66
@@ -431,17 +446,20 @@ class TestKankaService:
         self.mock_client.events.create.return_value = mock_entity
         self.service._tag_cache = {}
 
-        self.service.create_entity(
-            entity_type="event",
-            name="Child",
-            parent_id=12345,
-        )
+        with patch.object(self.service, "get_entity_by_id", return_value=None):
+            with patch.object(self.service, "_set_entity_parent") as m_set:
+                self.service.create_entity(
+                    entity_type="event",
+                    name="Child",
+                    parent_id=12345,
+                )
 
-        self.mock_client._request.assert_any_call(
-            "PATCH", "entities/66", json={"parent_id": 12345}
-        )
+        kwargs = self.mock_client.events.create.call_args.kwargs
+        assert "event_id" not in kwargs
+        m_set.assert_called_once_with(66, 12345, "Child")
 
-    def test_create_event_parent_id_resolves_event_id_when_parent_is_event(self):
+    def test_create_event_parent_id_global_entity_id_no_module_event_id(self):
+        """parent_id is already a global entity_id; do not send events.event_id on create."""
         mock_entity = Mock()
         mock_entity.id = 6
         mock_entity.entity_id = 66
@@ -471,34 +489,40 @@ class TestKankaService:
             return None
 
         with patch.object(self.service, "get_entity_by_id", side_effect=side_effect):
-            self.service.create_entity(
-                entity_type="event",
-                name="Child",
-                parent_id=600,
-            )
+            with patch.object(self.service, "_set_entity_parent") as m_set:
+                self.service.create_entity(
+                    entity_type="event",
+                    name="Child",
+                    parent_id=600,
+                )
 
         kwargs = self.mock_client.events.create.call_args.kwargs
-        assert kwargs["event_id"] == 88
+        assert "event_id" not in kwargs
+        m_set.assert_called_once_with(66, 600, "Child")
 
     def test_update_event_event_parent_id_maps_to_api_event_id(self):
         with patch.object(
-            self.service,
-            "get_entity_by_id",
-            return_value={
-                "id": 42,
-                "entity_id": 500,
-                "entity_type": "event",
-                "name": "Child",
-            },
-        ):
-            self.service.update_entity(500, event_parent_id=11)
+            self.service, "module_child_id_to_global_entity", return_value=333
+        ) as m_mod:
+            with patch.object(self.service, "_set_entity_parent") as m_set:
+                with patch.object(
+                    self.service,
+                    "get_entity_by_id",
+                    return_value={
+                        "id": 42,
+                        "entity_id": 500,
+                        "entity_type": "event",
+                        "name": "Child",
+                    },
+                ):
+                    self.service.update_entity(500, event_parent_id=11)
 
-        self.mock_client.events.update.assert_called_once()
-        assert self.mock_client.events.update.call_args[0][0] == 42
-        assert self.mock_client.events.update.call_args[1]["event_id"] == 11
+        m_mod.assert_called_once_with("event", 11)
+        m_set.assert_called_once_with(500, 333, "Child")
+        self.mock_client.events.update.assert_not_called()
 
-    def test_update_event_parent_global_entity_id_sets_event_id_via_lookup(self):
-        """parent_id pointing at another event's entity_id must set events.event_id (module id)."""
+    def test_update_event_parent_global_entity_id_sets_entity_parent_id(self):
+        """parent_id is global entity_id; applied via PATCH entities, not events.event_id."""
         child = {
             "id": 42,
             "entity_id": 500,
@@ -522,10 +546,11 @@ class TestKankaService:
             return None
 
         with patch.object(self.service, "get_entity_by_id", side_effect=side_effect):
-            self.service.update_entity(500, parent_id=600, parent_id_set=True)
+            with patch.object(self.service, "_set_entity_parent") as m_set:
+                self.service.update_entity(500, parent_id=600, parent_id_set=True)
 
-        self.mock_client.events.update.assert_called_once()
-        assert self.mock_client.events.update.call_args[1]["event_id"] == 77
+        m_set.assert_called_once_with(500, 600, "Child")
+        self.mock_client.events.update.assert_not_called()
 
     def test_update_event_explicit_event_parent_id_wins_over_parent_lookup(self):
         child = {
@@ -550,18 +575,26 @@ class TestKankaService:
                 return parent
             return None
 
-        with patch.object(self.service, "get_entity_by_id", side_effect=side_effect):
-            self.service.update_entity(
-                500,
-                parent_id=600,
-                parent_id_set=True,
-                event_parent_id=99,
-            )
+        with patch.object(
+            self.service, "module_child_id_to_global_entity", return_value=888
+        ) as m_mod:
+            with patch.object(self.service, "_set_entity_parent") as m_set:
+                with patch.object(
+                    self.service, "get_entity_by_id", side_effect=side_effect
+                ):
+                    self.service.update_entity(
+                        500,
+                        parent_id=600,
+                        parent_id_set=True,
+                        event_parent_id=99,
+                    )
 
-        self.mock_client.events.update.assert_called_once()
-        assert self.mock_client.events.update.call_args[1]["event_id"] == 99
+        m_mod.assert_called_once_with("event", 99)
+        m_set.assert_called_once_with(500, 888, "Child")
+        self.mock_client.events.update.assert_not_called()
 
     def test_update_event_parent_id_character_parent_skips_events_patch(self):
+        """Any entity type may be parent; nesting uses PATCH entities only."""
         child = {
             "id": 42,
             "entity_id": 500,
@@ -585,8 +618,10 @@ class TestKankaService:
             return None
 
         with patch.object(self.service, "get_entity_by_id", side_effect=side_effect):
-            self.service.update_entity(500, parent_id=200, parent_id_set=True)
+            with patch.object(self.service, "_set_entity_parent") as m_set:
+                self.service.update_entity(500, parent_id=200, parent_id_set=True)
 
+        m_set.assert_called_once_with(500, 200, "Child")
         self.mock_client.events.update.assert_not_called()
 
     def test_update_event_calendar_id_null_is_sent(self):
@@ -698,7 +733,8 @@ class TestKankaService:
         assert kwargs["icon"] == "fa-solid fa-crown"
         assert kwargs["colour"] == "#112233"
 
-    def test_update_entity_parent_id_only_skips_module_patch(self):
+    def test_update_event_parent_id_global_patches_even_if_parent_not_fetched(self):
+        """parent_id triggers _set_entity_parent; events persist via PATCH events/{child_id} inside it."""
         with patch.object(
             self.service,
             "get_entity_by_id",
@@ -709,12 +745,66 @@ class TestKankaService:
                 "name": "Child",
             },
         ):
-            self.service.update_entity(500, parent_id=321, parent_id_set=True)
+            with patch.object(self.service, "_set_entity_parent") as m_set:
+                self.service.update_entity(500, parent_id=321, parent_id_set=True)
 
+        m_set.assert_called_once_with(500, 321, "Child")
         self.mock_client.events.update.assert_not_called()
-        self.mock_client._request.assert_any_call(
-            "PATCH", "entities/500", json={"parent_id": 321}
+
+    def test_set_entity_parent_event_uses_patch_events(self):
+        """Events: parent_id must go to PATCH events/{child_id}, not PATCH entities."""
+        with patch.object(
+            self.service,
+            "_entity_row_minimal",
+            return_value={"type": "event", "child_id": 555},
+        ):
+            with patch.object(
+                self.service,
+                "read_entity_parent_global_id",
+                return_value=(True, 9001),
+            ):
+                self.service._set_entity_parent(100, 9001, current_name="Child")
+
+        self.mock_client._request.assert_called_once_with(
+            "PATCH",
+            "events/555",
+            json={"parent_id": 9001},
         )
+
+    def test_set_entity_parent_custom_type_uses_patch_entities(self):
+        """Non-event nested types use PATCH entities/{entity_id}."""
+        with patch.object(
+            self.service,
+            "_entity_row_minimal",
+            return_value={"type": "custom_foo", "child_id": 1},
+        ):
+            with patch.object(
+                self.service,
+                "raw_request",
+                return_value={},
+            ) as m_raw:
+                with patch.object(
+                    self.service,
+                    "read_entity_parent_global_id",
+                    return_value=(True, 42),
+                ):
+                    self.service._set_entity_parent(200, 42)
+
+        m_raw.assert_called_once_with(
+            "PATCH",
+            "entities/200",
+            json={"parent_id": 42},
+        )
+        self.mock_client._request.assert_not_called()
+
+    def test_set_entity_parent_event_missing_child_id_raises(self):
+        with patch.object(
+            self.service,
+            "_entity_row_minimal",
+            return_value={"type": "event", "child_id": None},
+        ):
+            with pytest.raises(ValueError, match="missing child_id"):
+                self.service._set_entity_parent(100, 1)
 
     def test_list_calendar_events_all_merges_pages(self):
         def fake_list(calendar_id: int, page: int = 1, limit: int = 15):
@@ -865,6 +955,78 @@ class TestKankaService:
         self.mock_client._request.assert_called_once_with(
             "GET", "entities/9072997"
         )
+
+    def test_resolve_timeline_subresource_id_maps_timeline_entity(self):
+        self.mock_client._request.return_value = {
+            "data": {"type": "timeline", "child": {"id": 44488}},
+        }
+        assert self.service.resolve_timeline_subresource_id(9072997) == 44488
+
+    def test_resolve_timeline_subresource_id_passes_through_module_id(self):
+        self.mock_client._request.return_value = {
+            "data": {"type": "character", "id": 1},
+        }
+        assert self.service.resolve_timeline_subresource_id(44488) == 44488
+
+    def test_resolve_timeline_subresource_id_passes_through_on_request_error(self):
+        self.mock_client._request.side_effect = Exception("not found")
+        assert self.service.resolve_timeline_subresource_id(999) == 999
+
+    def test_list_entities_timeline_uses_get_timelines(self):
+        self.mock_client._request.return_value = {
+            "data": [
+                {
+                    "id": 44488,
+                    "entity_id": 9072997,
+                    "name": "Ciridan Chronicles",
+                    "entry": None,
+                    "tags": [],
+                    "is_private": False,
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-02T00:00:00+00:00",
+                }
+            ],
+            "meta": {"last_page": 1},
+        }
+        rows = self.service.list_entities("timeline", page=1, limit=0)
+        assert len(rows) == 1
+        assert rows[0]["entity_id"] == 9072997
+        assert rows[0]["name"] == "Ciridan Chronicles"
+        self.mock_client._request.assert_called_with(
+            "GET",
+            "timelines",
+            params={"page": 1, "limit": 100},
+        )
+
+    def test_list_entities_timeline_tag_filter_requires_all_tags(self):
+        self.mock_client._request.return_value = {
+            "data": [
+                {
+                    "id": 1,
+                    "entity_id": 10,
+                    "name": "A",
+                    "tags": [5, 6],
+                },
+                {
+                    "id": 2,
+                    "entity_id": 11,
+                    "name": "B",
+                    "tags": [5],
+                },
+            ],
+            "meta": {"last_page": 1},
+        }
+        rows = self.service.list_entities(
+            "timeline", page=1, limit=0, tag_ids=[5, 6]
+        )
+        assert len(rows) == 1
+        assert rows[0]["entity_id"] == 10
+
+    def test_resolve_tag_names_accepts_non_numeric_strings(self):
+        """Kanka may return tag labels in arrays (e.g. timeline payloads); do not int()."""
+        self.service._tag_cache = {}
+        out = self.service._resolve_tag_names(["Japan", "World"])
+        assert out == ["Japan", "World"]
 
     def test_update_entity_timeline_patches_timelines_endpoint(self):
         self.service.get_entity_by_id = Mock(

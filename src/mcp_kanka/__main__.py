@@ -118,7 +118,7 @@ async def list_tools() -> list[types.Tool]:
                             "timeline",
                             "calendar",
                         ],
-                        "description": "Entity type to filter by",
+                        "description": "Entity type to filter by. For `timeline`, lists all campaign timelines via `GET timelines` (not the generic entities type_id filter).",
                     },
                     "name": {
                         "type": "string",
@@ -245,8 +245,7 @@ async def list_tools() -> list[types.Tool]:
                                 },
                                 "parent_id": {
                                     "type": "integer",
-                                    "description": "3.10 nesting: parent global entity id (`entities/{id}`), not module child id. "
-                                    "For events: if the parent is also an event, the MCP also sets API `event_id` on create (unless `event_parent_id` is set).",
+                                    "description": "Parent's global entity_id (/entities/{id}). For events: MCP GETs the entity, then PATCHes `events/{child_id}` with `parent_id` (verified Kanka API). For custom modules: PATCH `entities/{id}`. Prefer when you know the parent's entity id.",
                                 },
                                 "location_id": {
                                     "type": "integer",
@@ -313,7 +312,7 @@ async def list_tools() -> list[types.Tool]:
                                 },
                                 "event_parent_id": {
                                     "type": "integer",
-                                    "description": "Events only. Parent event module child id (events/{id}, NOT entity_id). Sent to the API as `event_id`.",
+                                    "description": "Events only. Parent event's module row id (API `events/{id}`). MCP resolves it to the parent's global entity_id, then PATCHes the child event row with `parent_id` (same as `parent_id`).",
                                 },
                                 "event_locations": {
                                     "type": "array",
@@ -332,8 +331,9 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="update_entities",
-            description="Update one or more entities. Timelines are supported: PATCH is sent to "
-            "`timelines/{module_id}` (module id resolved from the entity via `GET entities/{id}` → `child.id`).",
+            description="Update one or more entities. Timelines: PATCH `timelines/{module_id}`. "
+            "Event nesting: `GET entities/{entity_id}` → `PATCH events/{child_id}` with `parent_id` "
+            "(parent's global entity_id). Custom modules: `PATCH entities/{id}` for `parent_id`.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -360,8 +360,7 @@ async def list_tools() -> list[types.Tool]:
                                 },
                                 "parent_id": {
                                     "type": ["integer", "null"],
-                                    "description": "3.10 nesting: parent global entity id (`entities/{id}`). Set null to detach from parent. "
-                                    "For events: if the parent is also an event, the MCP also sets API `event_id` so calendar hierarchy updates (unless you override with `event_parent_id`).",
+                                    "description": "Parent's global entity_id. For events: MCP PATCHes `events/{child_id}` with this value; null detaches. For custom modules: PATCH `entities/{id}`. Prefer over `event_parent_id` when you know the parent's entity id.",
                                 },
                                 "location_id": {
                                     "type": "integer",
@@ -401,8 +400,8 @@ async def list_tools() -> list[types.Tool]:
                                 "tags": {"type": "array", "items": {"type": "string"}},
                                 "is_hidden": {"type": "boolean"},
                                 "event_parent_id": {
-                                    "type": "integer",
-                                    "description": "Events only. Parent event module child id (events/{id}, NOT entity_id). Sent to the API as `event_id`.",
+                                    "type": ["integer", "null"],
+                                    "description": "Events only. Parent event module row id (`events/{id}`). Resolved to global entity_id, then same as `parent_id` (PATCH child `events/{child_id}`). Null with key present detaches.",
                                 },
                                 "calendar_id": {
                                     "type": ["integer", "null"],
@@ -437,7 +436,7 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="get_entities",
-            description="Retrieve specific entities by global entity_id with their posts",
+            description="Retrieve specific entities by global entity_id. `parent_id` is the immediate parent's entity id when nested (including events).",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -791,8 +790,8 @@ async def list_tools() -> list[types.Tool]:
                     },
                     "timeline_id": {
                         "type": "integer",
-                        "description": "Timeline **module** id for `timelines/{id}/…` (not the browser entity id). "
-                        "Resolve with `GET entities/{entity_id}` → `data.child.id`, or list `GET …/timelines`.",
+                        "description": "Timeline **campaign entity id** (URL `/entities/{id}`) or **module** id for `timelines/{id}/…`. "
+                        "If `GET entities/{id}` returns `type: timeline`, the MCP uses `child.id` automatically; otherwise the value is used as the module id.",
                     },
                     "era_id": {
                         "type": "integer",
@@ -854,8 +853,8 @@ async def list_tools() -> list[types.Tool]:
                     },
                     "timeline_id": {
                         "type": "integer",
-                        "description": "Timeline **module** id for `timelines/{id}/…` (not the browser entity id). "
-                        "Resolve with `GET entities/{entity_id}` → `data.child.id`, or list `GET …/timelines`.",
+                        "description": "Timeline **campaign entity id** (URL `/entities/{id}`) or **module** id for `timelines/{id}/…`. "
+                        "If `GET entities/{id}` returns `type: timeline`, the MCP uses `child.id` automatically; otherwise the value is used as the module id.",
                     },
                     "element_id": {
                         "type": "integer",
@@ -1347,9 +1346,9 @@ async def list_tools() -> list[types.Tool]:
                 "Each step: {\"op\": ...}. Ops: update_map_marker (map_id, marker_id, fields), "
                 "update_calendar_event (calendar_id, calendar_event_id, fields), "
                 "create_reminder (entity_id, fields), "
-                "create_entity (fields; for entity_type event include calendar_*, event_parent_id → API event_id), "
+                "create_entity (fields; events: parent_id or event_parent_id → PATCH events/{child_id} parent_id), "
                 "create_post (fields), "
-                "update_entity (entity_id, fields; events may set event_parent_id), remove_entity_tags_by_tag_id (entity_id, tag_id), "
+                "update_entity (entity_id, fields; events: parent_id / event_parent_id same as create), remove_entity_tags_by_tag_id (entity_id, tag_id), "
                 "delete_entity (entity_id), sleep_ms (ms)."
             ),
             inputSchema={

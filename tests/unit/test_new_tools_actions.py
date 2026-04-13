@@ -7,6 +7,8 @@ from mcp_kanka.operations import KankaOperations
 
 async def _create_ops_with_mock_service():
     service = Mock()
+    # Timeline tools resolve URL/global entity ids to timelines/{module_id}; pass-through by default.
+    service.resolve_timeline_subresource_id.side_effect = lambda tid: tid
     ops = KankaOperations(service=service)
     return ops, service
 
@@ -207,6 +209,7 @@ class TestManageTimelineElements:
         )
 
         assert result == {"data": []}
+        service.resolve_timeline_subresource_id.assert_called_once_with(10)
         service.list_timeline_elements.assert_called_once_with(
             timeline_id=10, page=2, limit=15
         )
@@ -220,6 +223,7 @@ class TestManageTimelineElements:
         )
 
         assert result == {"data": [{"id": 1}]}
+        service.resolve_timeline_subresource_id.assert_called_once_with(10)
         service.list_timeline_elements_all.assert_called_once_with(
             timeline_id=10, limit=20
         )
@@ -300,6 +304,19 @@ class TestManageTimelineElements:
             timeline_id=10, element_id=20
         )
 
+    async def test_list_resolves_global_timeline_entity_id(self):
+        ops, service = await _create_ops_with_mock_service()
+        service.resolve_timeline_subresource_id.return_value = 44488
+        service.resolve_timeline_subresource_id.side_effect = None
+        service.list_timeline_elements.return_value = {"data": []}
+
+        await ops.manage_timeline_elements(action="list", timeline_id=9072997)
+
+        service.resolve_timeline_subresource_id.assert_called_once_with(9072997)
+        service.list_timeline_elements.assert_called_once_with(
+            timeline_id=44488, page=1, limit=15
+        )
+
 
 class TestManageTimelineEras:
     async def test_list_delegates(self):
@@ -311,6 +328,7 @@ class TestManageTimelineEras:
         )
 
         assert result == {"data": []}
+        service.resolve_timeline_subresource_id.assert_called_once_with(10)
         service.list_timeline_eras.assert_called_once_with(
             timeline_id=10, page=2, limit=12
         )
@@ -377,6 +395,19 @@ class TestManageTimelineEras:
             timeline_id=10, era_id=2, payload={"name": "Renamed"}
         )
         service.delete_timeline_era.assert_called_once_with(timeline_id=10, era_id=2)
+
+    async def test_list_resolves_global_timeline_entity_id(self):
+        ops, service = await _create_ops_with_mock_service()
+        service.resolve_timeline_subresource_id.return_value = 44488
+        service.resolve_timeline_subresource_id.side_effect = None
+        service.list_timeline_eras.return_value = {"data": []}
+
+        await ops.manage_timeline_eras(action="list", timeline_id=9072997)
+
+        service.resolve_timeline_subresource_id.assert_called_once_with(9072997)
+        service.list_timeline_eras.assert_called_once_with(
+            timeline_id=44488, page=1, limit=15
+        )
 
 
 class TestArchivesMediaCalendarTools:

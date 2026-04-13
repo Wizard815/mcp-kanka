@@ -46,6 +46,14 @@ def get_kanka_context() -> str:
             "examples": ["[entity:1234]", "[entity:1234|the ancient dragon]"],
             "note": "The MCP server preserves these during Markdown/HTML conversion",
         },
+        "entity_parent_nesting": (
+            "Nesting uses the parent's global entity_id. For **standard events** (GET entities/{id} returns "
+            "type \"event\"), Kanka does **not** reliably persist parent via PATCH entities/{id}; the MCP "
+            "uses PATCH events/{child_id} with parent_id, where child_id comes from that same GET. For "
+            "custom nested modules, PATCH entities/{id} with parent_id is used. Tools accept parent_id as "
+            "the parent's global entity_id; event_parent_id is an event module row id and is resolved to "
+            "global before the same logic. Regression-tested in unit tests and scripts/api_test_event_parent.py."
+        ),
         "limitations": "Some entity-specific fields/endpoints are not exposed. The server focuses on doc-verified core CRUD plus common sub-resources via `manage_*` tools (attributes, entity tags, inventory, permissions), and selected map/timeline/calendar/entity-image operations. Timeline **entities** support `update_entities` / `delete_entity` via the timelines API (module id resolved from the entity).",
     }
 

@@ -103,6 +103,14 @@ Entities have `id` (type-specific), `entity_id` (global), `child_id` (type id fo
 
 Filters: `type_id[]`, `name`, `type`, `is_private`, `tags[]`, etc.
 
+#### Entity nesting (`parent_id`)
+
+For **standard events**, `GET entities/{entity_id}` returns `type: "event"` and `child_id` (the events module row id). **Parent hierarchy for events is persisted with `PATCH events/{child_id}`** and JSON `parent_id` set to the parent’s **global** `entity_id`. Using `PATCH entities/{entity_id}` with `parent_id` alone is **not** reliable for events (the API may accept the request without applying the parent).
+
+For **custom (user) entity types** that support nesting, use **`PATCH entities/{entity_id}`** with `parent_id` (global id).
+
+When integrating or debugging, use `GET entities/{entity_id}?related=1` if you need related payloads; the MCP resolves parents consistently with the above rules.
+
 ### Characters
 
 | Method | URI |
@@ -202,7 +210,7 @@ Body: `name` (required), `entry`, `type`, `note_id` (parent), `tags`, `is_privat
 | PUT/PATCH | `events/{id}` |
 | DELETE | `events/{id}` |
 
-Body: `name` (required), `entry`, `type`, `date`, `location_id`, `tags`, `is_private`, `event_id` (parent for nesting). Events link to calendars via `calendar_id`, `calendar_year`, `calendar_month`, `calendar_day`.
+Body: `name` (required), `entry`, `type`, `date`, `location_id`, `tags`, `is_private`, `event_id` (legacy module parent id in some flows). For **entity-level** parent/child nesting, set **`parent_id`** to the parent’s **global** `entity_id` on **`PATCH events/{id}`** (use the event row `id` in the path, i.e. `child_id` from `GET entities/{entity_id}`). Events link to calendars via `calendar_id`, `calendar_year`, `calendar_month`, `calendar_day`.
 
 ### Calendars
 

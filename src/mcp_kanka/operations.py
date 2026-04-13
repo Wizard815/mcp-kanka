@@ -502,6 +502,7 @@ class KankaOperations:
                     image_uuid=update.get("image_uuid"),
                     header_uuid=update.get("header_uuid"),
                     event_parent_id=update.get("event_parent_id"),
+                    event_parent_id_set=("event_parent_id" in update),
                     event_locations=update.get("event_locations"),
                     calendar_id=update.get("calendar_id"),
                     calendar_id_set=("calendar_id" in update),
@@ -512,10 +513,67 @@ class KankaOperations:
                     colour=update.get("colour"),
                 )
 
+                error_message: str | None = None
+                if success and (
+                    "parent_id" in update
+                    or "event_parent_id" in update
+                    or "parent_location_id" in update
+                ):
+                    try:
+                        expected_parent: int | None = None
+                        # Match KankaService.update_entity: event module id before global parent_id.
+                        if "event_parent_id" in update:
+                            evp = update.get("event_parent_id")
+                            if evp is None:
+                                expected_parent = None
+                            else:
+                                expected_parent = (
+                                    self.service.module_child_id_to_global_entity(
+                                        "event", int(evp)
+                                    )
+                                )
+                        elif "parent_id" in update:
+                            v = update["parent_id"]
+                            expected_parent = int(v) if v is not None else None
+                        elif "parent_location_id" in update:
+                            pl = update.get("parent_location_id")
+                            if pl is None:
+                                expected_parent = None
+                            else:
+                                expected_parent = (
+                                    self.service.module_child_id_to_global_entity(
+                                        "location", int(pl)
+                                    )
+                                )
+                        known_parent, actual_parent = (
+                            self.service.read_entity_parent_global_id(entity_id)
+                        )
+                        if not known_parent:
+                            raise ValueError("could not read parent_id from entity row")
+
+                        if expected_parent is not None:
+                            if actual_parent != expected_parent:
+                                success = False
+                                error_message = (
+                                    "Parent verification failed: "
+                                    f"expected entity parent_id {expected_parent}, "
+                                    f"got {actual_parent!r}"
+                                )
+                        else:
+                            if actual_parent is not None:
+                                success = False
+                                error_message = (
+                                    "Parent verification failed: "
+                                    f"expected no parent, got parent_id={actual_parent!r}"
+                                )
+                    except Exception as ver_exc:
+                        success = False
+                        error_message = f"Parent verification failed: {ver_exc}"
+
                 result: UpdateEntityResult = {
                     "entity_id": update["entity_id"],
                     "success": success,
-                    "error": None,
+                    "error": error_message,
                 }
                 results.append(result)
 
@@ -618,6 +676,9 @@ class KankaOperations:
 
                 if "parent_id" in entity:
                     result["parent_id"] = entity.get("parent_id")
+
+                if "locations" in entity:
+                    result["locations"] = entity.get("locations")
 
                 if include_posts:
                     result["posts"] = entity.get("posts", [])
@@ -1045,6 +1106,7 @@ class KankaOperations:
         **fields: Any,
     ) -> dict[str, Any]:
         """Manage timeline elements for a timeline (list/create/update/delete)."""
+        timeline_id = self.service.resolve_timeline_subresource_id(timeline_id)
 
         element_fields = {
             "name",
@@ -1120,6 +1182,7 @@ class KankaOperations:
         **fields: Any,
     ) -> dict[str, Any]:
         """Manage timeline eras for a timeline (list/create/update/delete)."""
+        timeline_id = self.service.resolve_timeline_subresource_id(timeline_id)
         action = action.lower()
         era_fields = {
             "name",
@@ -1931,6 +1994,7 @@ class KankaOperations:
                         image_uuid=fields.get("image_uuid"),
                         header_uuid=fields.get("header_uuid"),
                         event_parent_id=fields.get("event_parent_id"),
+                        event_parent_id_set=("event_parent_id" in fields),
                         event_locations=fields.get("event_locations"),
                         calendar_id=fields.get("calendar_id"),
                         calendar_id_set=("calendar_id" in fields),

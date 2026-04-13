@@ -392,6 +392,7 @@ class TestUpdateEntities:
         mock_service = Mock()
         mock_service_class.return_value = mock_service
         mock_service.update_entity.return_value = True
+        mock_service.raw_request.return_value = {"data": {"parent_id": 99}}
 
         ops = KankaOperations(service=mock_service)
         await ops.update_entities(
@@ -424,6 +425,35 @@ class TestUpdateEntities:
         assert kwargs["calendar_day"] == 22
         assert kwargs["icon"] == "fa-solid fa-crown"
         assert kwargs["colour"] == "#123456"
+
+    @patch("mcp_kanka.operations.KankaService")
+    async def test_update_entity_event_parent_verification_failure(self, mock_service_class):
+        mock_service = Mock()
+        mock_service_class.return_value = mock_service
+        mock_service.update_entity.return_value = True
+        mock_service.get_entity_by_id.return_value = {
+            "id": 7,
+            "entity_id": 101,
+            "entity_type": "event",
+            "name": "Child",
+        }
+        mock_service.module_child_id_to_global_entity.return_value = 200
+        mock_service.read_entity_parent_global_id.return_value = (True, 303)
+
+        ops = KankaOperations(service=mock_service)
+        result = await ops.update_entities(
+            [{"entity_id": 101, "event_parent_id": 77}]
+        )
+
+        assert len(result) == 1
+        assert result[0]["success"] is False
+        err = result[0]["error"] or ""
+        assert "Parent verification failed" in err
+        assert "200" in err and "303" in err
+        mock_service.module_child_id_to_global_entity.assert_called_once_with(
+            "event", 77
+        )
+        mock_service.read_entity_parent_global_id.assert_called_once_with(101)
 
     @patch("mcp_kanka.operations.KankaService")
     async def test_update_event_explicit_null_calendar_id(self, mock_service_class):

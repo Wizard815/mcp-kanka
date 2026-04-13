@@ -61,7 +61,7 @@ class EntityInput(TypedDict):
     entry: str | None
     tags: list[str] | None
     is_hidden: bool | None
-    # 3.10 nesting: global parent entity id (`entities/{id}`), not module child id.
+    # Parent's global entity_id. Events: MCP PATCHes `events/{child_id}` with this `parent_id`.
     parent_id: NotRequired[int | None]
     # Location-specific: parent Location child_id (the Location module `id`, not an entity_id)
     location_id: int | None
@@ -70,7 +70,7 @@ class EntityInput(TypedDict):
     calendar_year: NotRequired[int | None]
     calendar_month: NotRequired[int | None]
     calendar_day: NotRequired[int | None]
-    # Event-specific: parent Event module child id (events/{id}); sent to API as `event_id`
+    # Event-specific: parent Event module id (events/{id}); resolved to global entity_id, then same as parent_id
     event_parent_id: NotRequired[int | None]
     # Event-specific: multiple linked location child ids
     event_locations: NotRequired[list[int] | None]
@@ -130,11 +130,11 @@ class EntityUpdate(TypedDict):
     entry: str | None
     tags: list[str] | None
     is_hidden: bool | None
-    # 3.10 nesting: global parent entity id (`entities/{id}`), not module child id.
+    # Parent's global entity_id. Events: MCP PATCHes `events/{child_id}` with this `parent_id`.
     parent_id: NotRequired[int | None]
     # Location-specific: parent Location child_id (the Location module `id`, not an entity_id)
     location_id: int | None
-    # Event-specific: parent Event module child id; sent to API as `event_id`
+    # Event-specific: parent Event module id; resolved to global entity_id, then same as parent_id
     event_parent_id: NotRequired[int | None]
     # Event-specific: multiple linked location child ids
     event_locations: NotRequired[list[int] | None]
@@ -278,7 +278,7 @@ class EntityFull(TypedDict, total=False):
     locations: list[int] | list[dict[str, Any]] | None  # Event-linked locations
     icon: str | None  # Tag icon
     colour: str | None  # Tag colour
-    parent_id: int | None  # 3.10 entity-level parent
+    parent_id: int | None  # Immediate parent global entity_id (events: from entity row)
     image: str | None  # Local path to the picture
     image_full: str | None  # URL to the full picture
     image_thumb: str | None  # URL to the thumbnail
@@ -360,7 +360,7 @@ class GetEntityResult(TypedDict, total=False):
     locations: list[int] | list[dict[str, Any]] | None  # Event-linked locations
     icon: str | None  # Tag icon
     colour: str | None  # Tag colour
-    parent_id: int | None  # 3.10 entity-level parent
+    parent_id: int | None  # Parent global entity_id (events included when nested)
     image: str | None  # Local path to the picture
     image_full: str | None  # URL to the full picture
     image_thumb: str | None  # URL to the thumbnail
@@ -440,6 +440,7 @@ class KankaContext(TypedDict):
     terminology: KankaContextTerminology
     posts: str
     mentions: KankaContextMentions
+    entity_parent_nesting: str
     limitations: str
 
 
