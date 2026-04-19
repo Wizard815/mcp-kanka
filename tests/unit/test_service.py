@@ -356,7 +356,9 @@ class TestKankaService:
                     )
 
         m_mod.assert_called_once_with("location", 9)
-        m_set.assert_called_once_with(180, 909, "District")
+        m_set.assert_called_once_with(
+            180, 909, "District", entity_type_hint="location"
+        )
         self.mock_client.locations.update.assert_called_once()
         kwargs = self.mock_client.locations.update.call_args.kwargs
         assert "location_id" not in kwargs
@@ -425,7 +427,7 @@ class TestKankaService:
                 )
 
         m_mod.assert_called_once_with("event", 99)
-        m_set.assert_called_once_with(66, 555, "Child")
+        m_set.assert_called_once_with(66, 555, "Child", entity_type_hint="event")
         kwargs = self.mock_client.events.create.call_args.kwargs
         assert "event_id" not in kwargs
         assert "calendar_id" not in kwargs
@@ -456,7 +458,7 @@ class TestKankaService:
 
         kwargs = self.mock_client.events.create.call_args.kwargs
         assert "event_id" not in kwargs
-        m_set.assert_called_once_with(66, 12345, "Child")
+        m_set.assert_called_once_with(66, 12345, "Child", entity_type_hint="event")
 
     def test_create_event_parent_id_global_entity_id_no_module_event_id(self):
         """parent_id is already a global entity_id; do not send events.event_id on create."""
@@ -498,7 +500,7 @@ class TestKankaService:
 
         kwargs = self.mock_client.events.create.call_args.kwargs
         assert "event_id" not in kwargs
-        m_set.assert_called_once_with(66, 600, "Child")
+        m_set.assert_called_once_with(66, 600, "Child", entity_type_hint="event")
 
     def test_update_event_event_parent_id_maps_to_api_event_id(self):
         with patch.object(
@@ -518,7 +520,7 @@ class TestKankaService:
                     self.service.update_entity(500, event_parent_id=11)
 
         m_mod.assert_called_once_with("event", 11)
-        m_set.assert_called_once_with(500, 333, "Child")
+        m_set.assert_called_once_with(500, 333, "Child", entity_type_hint="event")
         self.mock_client.events.update.assert_not_called()
 
     def test_update_event_parent_global_entity_id_sets_entity_parent_id(self):
@@ -549,7 +551,7 @@ class TestKankaService:
             with patch.object(self.service, "_set_entity_parent") as m_set:
                 self.service.update_entity(500, parent_id=600, parent_id_set=True)
 
-        m_set.assert_called_once_with(500, 600, "Child")
+        m_set.assert_called_once_with(500, 600, "Child", entity_type_hint="event")
         self.mock_client.events.update.assert_not_called()
 
     def test_update_event_explicit_event_parent_id_wins_over_parent_lookup(self):
@@ -590,7 +592,7 @@ class TestKankaService:
                     )
 
         m_mod.assert_called_once_with("event", 99)
-        m_set.assert_called_once_with(500, 888, "Child")
+        m_set.assert_called_once_with(500, 888, "Child", entity_type_hint="event")
         self.mock_client.events.update.assert_not_called()
 
     def test_update_event_parent_id_character_parent_skips_events_patch(self):
@@ -621,7 +623,7 @@ class TestKankaService:
             with patch.object(self.service, "_set_entity_parent") as m_set:
                 self.service.update_entity(500, parent_id=200, parent_id_set=True)
 
-        m_set.assert_called_once_with(500, 200, "Child")
+        m_set.assert_called_once_with(500, 200, "Child", entity_type_hint="event")
         self.mock_client.events.update.assert_not_called()
 
     def test_update_event_calendar_id_null_is_sent(self):
@@ -748,7 +750,7 @@ class TestKankaService:
             with patch.object(self.service, "_set_entity_parent") as m_set:
                 self.service.update_entity(500, parent_id=321, parent_id_set=True)
 
-        m_set.assert_called_once_with(500, 321, "Child")
+        m_set.assert_called_once_with(500, 321, "Child", entity_type_hint="event")
         self.mock_client.events.update.assert_not_called()
 
     def test_set_entity_parent_event_uses_patch_events(self):

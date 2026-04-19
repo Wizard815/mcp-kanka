@@ -4,6 +4,7 @@
 
 import logging
 import os
+import time
 from typing import Any
 
 from kanka import KankaClient
@@ -897,7 +898,10 @@ class KankaService:
 
             if nest_parent_global is not None:
                 self._set_entity_parent(
-                    entity.entity_id, nest_parent_global, entity.name
+                    entity.entity_id,
+                    nest_parent_global,
+                    entity.name,
+                    entity_type_hint=entity_type,
                 )
             known_p, pid = self.read_entity_parent_global_id(entity.entity_id)
             result["parent_id"] = pid if known_p else nest_parent_global
@@ -1038,7 +1042,10 @@ class KankaService:
                             raise
                 if parent_id_set:
                     self._set_entity_parent(
-                        entity_id, parent_id, entity_data.get("name")
+                        entity_id,
+                        parent_id,
+                        entity_data.get("name"),
+                        entity_type_hint="timeline",
                     )
                 return True
 
@@ -1255,6 +1262,7 @@ class KankaService:
                     entity_id,
                     entity_parent_val,
                     name if name is not None else entity_data.get("name"),
+                    entity_type_hint=entity_type,
                 )
 
             return True
@@ -1872,17 +1880,75 @@ class KankaService:
         data = response.get("data", response)
         return data if isinstance(data, dict) else {}
 
+    def _entity_row_with_related(self, entity_id: int) -> dict[str, Any]:
+        """``GET entities/{entity_id}?related=1`` for nested fields used in parent ops."""
+        try:
+            response = self.client._request(
+                "GET", f"entities/{entity_id}", params={"related": 1}
+            )
+        except Exception:
+            return {}
+        data = response.get("data", response)
+        return data if isinstance(data, dict) else {}
+
+    @staticmethod
+    def _parse_parent_id_from_payload(obj: Any) -> int | None:
+        """Extract ``parent_id`` from a PATCH/GET ``data`` object if present."""
+        if not isinstance(obj, dict):
+            return None
+        pid = obj.get("parent_id")
+        if isinstance(pid, int):
+            return pid
+        if isinstance(pid, str) and pid.strip().isdigit():
+            return int(pid.strip())
+        return None
+
+    @staticmethod
+    def _is_location_entity_row(row: dict[str, Any]) -> bool:
+        """True if this entity row is the location module (not the user subtype)."""
+        if row.get("entity_type") == "location":
+            return True
+        if row.get("type") == "location":
+            return True
+        return False
+
+    @staticmethod
+    def _location_module_id_from_entity_row(row: dict[str, Any]) -> int | None:
+        """``locations/{id}`` row id from an entity payload."""
+        cid = row.get("child_id")
+        if isinstance(cid, int):
+            return cid
+        child = row.get("child")
+        if isinstance(child, dict):
+            mid = child.get("id")
+            if isinstance(mid, int):
+                return mid
+        return None
+
+    def _global_entity_to_location_module_id(self, global_entity_id: int) -> int | None:
+        """Map a location entity's global id to ``locations/{id}`` module row id."""
+        for row in (
+            self._entity_row_with_related(global_entity_id),
+            self._entity_row_minimal(global_entity_id),
+        ):
+            mod = self._location_module_id_from_entity_row(row)
+            if isinstance(mod, int):
+                return mod
+        return None
+
     def _set_entity_parent(
         self,
         entity_id: int,
         parent_id: int | None,
         current_name: str | None = None,
+        *,
+        entity_type_hint: str | None = None,
     ) -> None:
         """Persist entity nesting.
 
-        Kanka accepts ``parent_id`` on ``PATCH entities/{id}`` for custom modules.
-        For **events**, the API persists hierarchy on ``PATCH events/{child_id}`` with
-        ``parent_id`` set to the parent's **global** entity id (verified against live API).
+        **Kanka 3.10+** stores hierarchy on ``PATCH entities/{id}`` with ``parent_id``.
+        Events use ``PATCH events/{child_id}``. For locations, a legacy
+        ``PATCH locations/{child_id}`` + ``location_id`` fallback applies when GET lags.
         """
         row = self._entity_row_minimal(entity_id)
         is_event = row.get("type") == "event"
@@ -1903,9 +1969,12 @@ class KankaService:
         if is_event:
             patch_events_row({"parent_id": parent_id})
         else:
-            self.raw_request(
+            wr = self.raw_request(
                 "PATCH", f"entities/{entity_id}", json={"parent_id": parent_id}
             )
+            if self._parse_parent_id_from_payload(wr.get("data")) == parent_id:
+                return
+            time.sleep(0.05)
 
         read_back = (
             self.read_entity_parent_global_id
@@ -1923,13 +1992,101 @@ class KankaService:
             if is_event:
                 patch_events_row({"name": current_name, "parent_id": parent_id})
             else:
-                self.raw_request(
+                wr2 = self.raw_request(
                     "PATCH",
                     f"entities/{entity_id}",
                     json={"name": current_name, "parent_id": parent_id},
                 )
+                if self._parse_parent_id_from_payload(wr2.get("data")) == parent_id:
+                    return
+                time.sleep(0.05)
             if matches():
                 return
+
+        hint = entity_type_hint
+        if hint == "organisation":
+            hint = "organization"
+
+        if not is_event:
+            detail = self._entity_row_with_related(entity_id)
+            treat_as_location = hint == "location" or (
+                hint is None and self._is_location_entity_row(detail)
+            )
+            if treat_as_location:
+                child_mod = self._location_module_id_from_entity_row(
+                    detail
+                ) or self._location_module_id_from_entity_row(row)
+                if isinstance(child_mod, int):
+                    if parent_id is not None:
+
+                        def _location_patch_trust(loc_resp: dict[str, Any]) -> bool:
+                            if self._parse_parent_id_from_payload(
+                                loc_resp.get("data")
+                            ) == parent_id:
+                                return True
+                            time.sleep(0.05)
+                            if matches():
+                                return True
+                            logger.info(
+                                "Location nested via PATCH locations/%s "
+                                "(entity_id=%s -> parent entity %s); "
+                                "GET entities did not echo parent_id yet.",
+                                child_mod,
+                                entity_id,
+                                parent_id,
+                            )
+                            return True
+
+                        # Kanka 3.10+: parent nesting for locations is written on the
+                        # ``locations/{id}`` row with ``parent_id`` = parent's **global**
+                        # ``entity_id`` (verified live API). ``location_id`` (module id)
+                        # is not the correct write shape for this campaign/API version.
+                        try:
+                            loc_resp = self.client._request(
+                                "PATCH",
+                                f"locations/{child_mod}",
+                                json={"parent_id": parent_id},
+                            )
+                            if _location_patch_trust(loc_resp):
+                                return
+                        except KankaException as exc:
+                            logger.debug(
+                                "PATCH locations/{child} parent_id=%s failed: %s",
+                                parent_id,
+                                exc,
+                            )
+                            parent_mod = self._global_entity_to_location_module_id(
+                                parent_id
+                            )
+                            if parent_mod is not None:
+                                try:
+                                    loc_resp = self.client._request(
+                                        "PATCH",
+                                        f"locations/{child_mod}",
+                                        json={"location_id": parent_mod},
+                                    )
+                                    if _location_patch_trust(loc_resp):
+                                        return
+                                except KankaException as exc2:
+                                    logger.debug(
+                                        "Legacy PATCH locations location_id failed: %s",
+                                        exc2,
+                                    )
+                    else:
+                        try:
+                            self.client._request(
+                                "PATCH",
+                                f"locations/{child_mod}",
+                                json={"location_id": None},
+                            )
+                            time.sleep(0.05)
+                            if matches():
+                                return
+                        except KankaException as exc:
+                            logger.debug(
+                                "Location detach via PATCH locations failed: %s", exc
+                            )
+
         known_f, actual_f = read_back(entity_id)
         raise ValueError(
             f"Parent update did not persist for entity {entity_id}: "
