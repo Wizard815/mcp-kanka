@@ -6,6 +6,7 @@ An MCP server that provides tools for interacting with Kanka campaigns.
 """
 
 import asyncio
+import json
 import logging
 import os
 from typing import Any
@@ -1483,7 +1484,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextCont
         else:
             raise ValueError(f"Unknown tool: {name}")
 
-        return [types.TextContent(type="text", text=str(result))]
+        return [
+            types.TextContent(
+                type="text",
+                text=json.dumps(result, ensure_ascii=False, default=str),
+            )
+        ]
     except Exception as e:
         logger.error(f"Error in tool {name}: {str(e)}", exc_info=True)
         return [types.TextContent(type="text", text=f"Error: {str(e)}")]

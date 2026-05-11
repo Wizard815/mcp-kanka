@@ -90,6 +90,10 @@ claude mcp add kanka \
   -- python -m mcp_kanka
 ```
 
+### OpenWebUI (via mcpo)
+
+OpenWebUI does not use the native MCP stdio transport. If you bridge this server with **[mcpo](https://github.com/open-webui/mcpo)** (MCP → HTTP/OpenAPI), tool responses must be **valid JSON in the tool result text**, not Python’s `repr` of a dict (single quotes, `True`/`False`). From **v1.1.1** onward, all tool payloads are serialized with `json.dumps`, so OpenWebUI and similar HTTP clients can parse results reliably.
+
 ## Supported Entity Types
 
 - **Character** - Player characters (PCs), non-player characters (NPCs)
