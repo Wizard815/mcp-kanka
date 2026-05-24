@@ -738,9 +738,8 @@ class KankaService:
                         "map", map_id
                     )
                 elif entity_type == "note" and note_id is not None:
-                    nest_parent_global = self.module_child_id_to_global_entity(
-                        "note", note_id
-                    )
+                    # Kanka breaking change: nesting via PATCH entities/{id} parent_id.
+                    nest_parent_global = self.module_child_id_to_global_entity("note", note_id)
                 elif entity_type == "journal" and journal_id is not None:
                     nest_parent_global = self.module_child_id_to_global_entity(
                         "journal", journal_id
@@ -1091,9 +1090,9 @@ class KankaService:
                 )
             elif entity_type == "note" and note_id is not None:
                 apply_entity_parent = True
-                entity_parent_val = self.module_child_id_to_global_entity(
-                    "note", note_id
-                )
+                # Kanka breaking change: nesting now via PATCH entities/{id} parent_id.
+                # note_id is the parent's module id; convert to global entity_id.
+                entity_parent_val = self.module_child_id_to_global_entity("note", note_id)
             elif entity_type == "journal" and journal_id is not None:
                 apply_entity_parent = True
                 entity_parent_val = self.module_child_id_to_global_entity(
@@ -1263,6 +1262,7 @@ class KankaService:
                     entity_parent_val,
                     name if name is not None else entity_data.get("name"),
                     entity_type_hint=entity_type,
+                    child_module_id=entity_data.get("id"),
                 )
 
             return True
@@ -1943,20 +1943,32 @@ class KankaService:
         current_name: str | None = None,
         *,
         entity_type_hint: str | None = None,
+        child_module_id: int | None = None,
     ) -> None:
         """Persist entity nesting.
 
         **Kanka 3.10+** stores hierarchy on ``PATCH entities/{id}`` with ``parent_id``.
         Events use ``PATCH events/{child_id}``. For locations, a legacy
         ``PATCH locations/{child_id}`` + ``location_id`` fallback applies when GET lags.
+        Notes use ``PATCH notes/{child_module_id}`` with ``{"note_id": parent_module_id}``.
         """
         row = self._entity_row_minimal(entity_id)
-        is_event = row.get("type") == "event"
+        entity_type = row.get("type")
+        is_event = entity_type == "event"
+        is_note = entity_type == "note"
         event_child_id = row.get("child_id")
         if is_event and not isinstance(event_child_id, int):
             raise ValueError(
                 f"Cannot set parent for event entity {entity_id}: "
                 "missing child_id (events row id) on entity payload"
+            )
+
+        # Notes: use child_module_id passed from caller (entity_data["id"])
+        note_child_id: int | None = child_module_id if is_note else None
+        if is_note and not isinstance(note_child_id, int):
+            raise ValueError(
+                f"Cannot set parent for note entity {entity_id}: "
+                "child_module_id not provided or invalid"
             )
 
         def patch_events_row(body: dict[str, Any]) -> None:
@@ -1966,8 +1978,47 @@ class KankaService:
                 json=body,
             )
 
+        def patch_notes_row(parent_note_module_id: int | None) -> None:
+            # Notes API: PATCH notes/{note.id} with {"note_id": parent_module_id}
+            # Include name to avoid 422 on some Kanka versions
+            body: dict[str, Any] = {"note_id": parent_note_module_id}
+            if current_name:
+                body["name"] = current_name
+            self.raw_request(
+                "PATCH",
+                f"notes/{note_child_id}",
+                json=body,
+            )
+
         if is_event:
             patch_events_row({"parent_id": parent_id})
+        elif is_note:
+            # Kanka API breaking change: note_id on PATCH notes/{id} is deprecated.
+            # All nesting now goes through PATCH entities/{entity_id} with parent_id
+            # (the parent's global entity_id). Convert note module id back to entity_id.
+            parent_entity_id = self.module_child_id_to_global_entity("note", parent_id) if parent_id is not None else None
+            logger.info("Note reparent: entity_id=%s parent_note_module_id=%s -> parent_entity_id=%s", entity_id, parent_id, parent_entity_id)
+            wr = self.raw_request(
+                "PATCH", f"entities/{entity_id}", json={"parent_id": parent_entity_id}
+            )
+            logger.info("PATCH entities/%s parent_id=%s -> resp parent_id=%s", entity_id, parent_entity_id, wr.get("data", {}).get("parent_id") if isinstance(wr.get("data"), dict) else str(wr)[:100])
+            if self._parse_parent_id_from_payload(wr.get("data")) == parent_entity_id:
+                return
+            # Kanka has propagation delay — wait longer before verifying
+            time.sleep(1.0)
+            known, actual = self.read_entity_parent_global_id(entity_id)
+            logger.info("Verify entity/%s parent: known=%s actual=%s expected=%s", entity_id, known, actual, parent_entity_id)
+            if known and actual == parent_entity_id:
+                return
+            # One more retry with extra wait
+            time.sleep(1.0)
+            known2, actual2 = self.read_entity_parent_global_id(entity_id)
+            if known2 and actual2 == parent_entity_id:
+                return
+            raise ValueError(
+                f"Parent update did not persist for note entity {entity_id}: "
+                f"expected {parent_entity_id}, got {actual2!r}"
+            )
         else:
             wr = self.raw_request(
                 "PATCH", f"entities/{entity_id}", json={"parent_id": parent_id}

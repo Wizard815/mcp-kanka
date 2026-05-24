@@ -514,7 +514,11 @@ class KankaOperations:
                 )
 
                 error_message: str | None = None
-                if success and (
+                # note_id nesting is verified inside KankaService._set_entity_parent
+                # via PATCH notes/{child_id} + GET notes/{child_id} read-back.
+                # Skip the generic parent_id verification for notes.
+                _is_note_update = "note_id" in update
+                if success and not _is_note_update and (
                     "parent_id" in update
                     or "event_parent_id" in update
                     or "parent_location_id" in update
