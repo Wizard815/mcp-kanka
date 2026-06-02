@@ -23,30 +23,17 @@ class TestEntityVisibility:
 
     def test_create_entity_with_is_hidden_true(self):
         """Test creating entity with is_hidden=True sets is_private=True."""
-        # Mock entity creation
-        created_entity = Mock(
-            spec=[
-                "id",
-                "entity_id",
-                "name",
-                "is_private",
-                "entry",
-                "tags",
-                "type",
-                "created_at",
-                "updated_at",
-            ]
+        # Mock direct API response
+        self.mock_client._request = Mock(
+            return_value={
+                "data": {
+                    "id": 1,
+                    "entity_id": 101,
+                    "name": "Test Character",
+                    "type": None,
+                }
+            }
         )
-        created_entity.id = 1
-        created_entity.entity_id = 101
-        created_entity.name = "Test Character"
-        created_entity.is_private = True
-        created_entity.entry = None  # No entry content
-        created_entity.tags = []
-        created_entity.type = None
-        created_entity.created_at = None
-        created_entity.updated_at = None
-        self.mock_client.characters.create.return_value = created_entity
 
         # Mock tag cache
         self.service._tag_cache = {}
@@ -58,41 +45,28 @@ class TestEntityVisibility:
             is_hidden=True,
         )
 
-        # Verify is_private was sent to API
-        self.mock_client.characters.create.assert_called_once()
-        call_args = self.mock_client.characters.create.call_args[1]
-        assert call_args["is_private"] is True
-        assert "visibility_id" not in call_args
+        # Verify is_private was sent to API via direct call
+        self.mock_client._request.assert_called_once()
+        payload = self.mock_client._request.call_args[1]["json"]
+        assert payload["is_private"] is True
+        assert "visibility_id" not in payload
 
         # Verify result shows is_hidden
         assert result["is_hidden"] is True
 
     def test_create_entity_with_is_hidden_false(self):
         """Test creating entity with is_hidden=False sets is_private=False."""
-        # Mock entity creation
-        created_entity = Mock(
-            spec=[
-                "id",
-                "entity_id",
-                "name",
-                "is_private",
-                "entry",
-                "tags",
-                "type",
-                "created_at",
-                "updated_at",
-            ]
+        # Mock direct API response
+        self.mock_client._request = Mock(
+            return_value={
+                "data": {
+                    "id": 1,
+                    "entity_id": 101,
+                    "name": "Test Character",
+                    "type": None,
+                }
+            }
         )
-        created_entity.id = 1
-        created_entity.entity_id = 101
-        created_entity.name = "Test Character"
-        created_entity.is_private = False
-        created_entity.entry = None  # No entry content
-        created_entity.tags = []
-        created_entity.type = None
-        created_entity.created_at = None
-        created_entity.updated_at = None
-        self.mock_client.characters.create.return_value = created_entity
 
         # Mock tag cache
         self.service._tag_cache = {}
@@ -104,11 +78,11 @@ class TestEntityVisibility:
             is_hidden=False,
         )
 
-        # Verify is_private was sent to API
-        self.mock_client.characters.create.assert_called_once()
-        call_args = self.mock_client.characters.create.call_args[1]
-        assert call_args["is_private"] is False
-        assert "visibility_id" not in call_args
+        # Verify is_private was sent to API via direct call
+        self.mock_client._request.assert_called_once()
+        payload = self.mock_client._request.call_args[1]["json"]
+        assert payload["is_private"] is False
+        assert "visibility_id" not in payload
 
         # Verify result shows is_hidden
         assert result["is_hidden"] is False
@@ -125,8 +99,8 @@ class TestEntityVisibility:
             }
         )
 
-        # Mock update
-        self.mock_client.characters.update.return_value = True
+        # Mock direct API response
+        self.mock_client._request = Mock(return_value={"data": {}})
 
         # Update entity with is_hidden=True
         self.service.update_entity(
@@ -135,11 +109,11 @@ class TestEntityVisibility:
             is_hidden=True,
         )
 
-        # Verify is_private was sent to API
-        self.mock_client.characters.update.assert_called_once()
-        call_args = self.mock_client.characters.update.call_args[1]
-        assert call_args["is_private"] is True
-        assert "visibility_id" not in call_args
+        # Verify is_private was sent to API via direct call
+        self.mock_client._request.assert_called_once()
+        payload = self.mock_client._request.call_args[1]["json"]
+        assert payload["is_private"] is True
+        assert "visibility_id" not in payload
 
     def test_entity_to_dict_converts_is_private_to_is_hidden(self):
         """Test _entity_to_dict converts is_private to is_hidden."""

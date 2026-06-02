@@ -29,6 +29,7 @@ class TestGetKankaContext:
         assert "terminology" in data
         assert "posts" in data
         assert "mentions" in data
+        assert "entity_parent_nesting" in data
         assert "limitations" in data
 
     def test_supported_entities(self):
@@ -38,18 +39,23 @@ class TestGetKankaContext:
 
         entities = data["supported_entities"]
         assert isinstance(entities, dict)
-        assert len(entities) == 8
+        assert len(entities) == 13
 
         # Check all expected entity types
         expected_types = [
             "character",
             "creature",
+            "ability",
+            "conversation",
             "location",
             "organization",
+            "dice_roll",
+            "bookmark",
             "race",
             "note",
             "journal",
             "quest",
+            "attribute",
         ]
         for expected in expected_types:
             assert expected in entities
@@ -103,6 +109,16 @@ class TestGetKankaContext:
         posts = data["posts"]
         assert isinstance(posts, str)
         assert "notes" in posts.lower() or "comments" in posts.lower()
+
+    def test_entity_parent_nesting_field(self):
+        """Documented event vs entities PATCH behavior for parent_id."""
+        result = get_kanka_context()
+        data = json.loads(result)
+
+        nesting = data["entity_parent_nesting"]
+        assert isinstance(nesting, str)
+        assert "PATCH events/" in nesting
+        assert "parent_id" in nesting
 
     def test_limitations_field(self):
         """Test the limitations field."""

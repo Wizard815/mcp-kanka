@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is an MCP (Model Context Protocol) server that provides AI assistants with tools to interact with Kanka campaigns. It exposes 9 tools for CRUD operations on Kanka entities (characters, locations, organizations, etc.) and implements client-side filtering, fuzzy search, and markdown/HTML conversion.
+This is an MCP (Model Context Protocol) server that provides AI assistants with tools to interact with Kanka campaigns. It exposes 12 tools for CRUD operations on Kanka entities (characters, locations, organizations, families, items, tags, etc.), sub-resource management (relations, attributes, organisation members), and implements client-side filtering, fuzzy search, and markdown/HTML conversion.
 
 ## Key Development Commands
 
@@ -105,7 +105,11 @@ The MCP server follows this structure:
 5. **Content Converter** (`converter.py`): Markdown ↔ HTML conversion with mention preservation
 6. **Types Module** (`types.py`): Type definitions for tool parameters and responses
 7. **Utils Module** (`utils.py`): Shared utilities like fuzzy matching, filtering, pagination
-8. **Resources Module** (`resources.py`): Provides the kanka://context resource
+8. **Resources Module** (`resources.py`): Provides the kanka://context and kanka://api-reference resources
+
+### Agent API Context
+
+When working with Kanka API calls, agents should reference `docs/KANKA_API_REFERENCE.md` or the `kanka://api-reference` MCP resource. This file contains endpoint paths, body parameters, and critical format notes (e.g. Calendar create/update use `moon_name`/`moon_fullmoon` flat arrays, not `moons` objects).
 
 ## Implementation Guidelines
 
@@ -212,20 +216,61 @@ async def handle_find_entities(**params):
 - `update_posts()` - Update existing posts
 - `delete_posts()` - Delete posts
 - `check_entity_updates()` - Check for modified entities since last sync
+- `manage_relations()` - Create/update/delete/list relations between entities
+- `manage_attributes()` - Create/update/delete/list/bulk-patch custom attributes
+- `manage_organisation_members()` - Add/update/remove/list org members
+- `manage_calendar_reminders()` - Add/update/remove/list calendar events (birth/death/founded for age calc)
+
+## Calendar Reminders & Character Age
+
+Calendar reminders with `event_type` drive age calculation in Kanka. See [Birth, Death, Foundation](https://docs.kanka.io/en/latest/advanced/age.html):
+- **Characters**: `birth` (type_id 2), `death` (type_id 3) – age shown in profile sidebar
+- **Locations/Organisations/Families**: `founded` (type_id 1)
+
+When creating characters (or locations/orgs/families), pass `reminder: {calendar_id, year, month, day, type}` with `type` = `birth` or `death` (characters) or `founded` (locations/orgs/families) to auto-add a reminder for age calculation. `manage_calendar_reminders` supports `event_type` for manual reminders.
 
 ## Key Implementation Details
 
-### Service Layer Changes
-- `search_entities()` now uses list endpoints with name filtering instead of search API
+### Supported Entity Types
+11 entity types: `character`, `creature`, `family`, `item`, `location`, `organization`, `race`, `note`, `journal`, `quest`, `tag`
+
+### Service Layer
+- `search_entities()` uses list endpoints with name filtering instead of search API
 - Handles entity type mapping (e.g., 'organisation' in API vs 'organization' internally)
 - Implements pagination when fetching all entities (limit=0)
-- Properly tracks and cleans up test entities
+- Items use direct API via `client._request()` (no SDK manager)
+- Families and Tags use SDK managers
+- Sub-resource methods (relations, attributes, org members) use `client._request()` for direct API calls
+
+### Parent ID / Nesting System
+Entities can be nested under a parent of the same type via `parent_id`. The service layer maps this to the correct API field per type:
+- location → `parent_location_id`
+- note → `note_id`
+- organisation → `organisation_id`
+- journal → `journal_id`
+- quest → `quest_id`
+- race → `race_id`
+- creature → `creature_id`
+- family → `family_id`
+- tag → `tag_id`
+- item → `item_id`
+
+### Entity-Specific Fields
+Create/update tools support optional type-specific fields:
+- **Characters**: `location_id`, `title`, `age`, `sex`, `pronouns`, `is_dead`, `races`, `families`, `reminder` (birth/death for age calc)
+- **Organisations**: `location_id`, `is_defunct`
+- **Journals**: `date`, `character_id`
+- **Families**: `location_id`, `is_extinct`
+- **Items**: `location_id`, `creator_id`, `price`, `size`, `weight`
+- **Tags**: `colour`
+- **Quests**: `character_id`, `is_completed`
 
 ### Tool Implementation
-- `find_entities`: Now supports full content search - fetches entities and searches client-side
+- `find_entities`: Supports full content search - fetches entities and searches client-side
 - All tools use proper error handling with partial success patterns
 - Batch operations return individual success/error status for each item
 - Content search implemented via `search_in_content()` in utils.py
+- Sub-resource tools accept an `actions` array for batch CRUD operations
 
 ## Development Preferences
 

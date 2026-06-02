@@ -10,12 +10,15 @@ from .operations import KankaOperations, create_operations
 from .resources import get_kanka_context
 from .service import KankaService
 from .tools import (
+    handle_check_entity_updates,
     handle_create_entities,
     handle_create_posts,
     handle_delete_entities,
     handle_delete_posts,
     handle_find_entities,
     handle_get_entities,
+    handle_manage_attributes,
+    handle_manage_relations,
     handle_update_entities,
     handle_update_posts,
 )
@@ -63,12 +66,15 @@ __all__ = [
     # Service
     "KankaService",
     # Tools
+    "handle_check_entity_updates",
     "handle_create_entities",
     "handle_create_posts",
     "handle_delete_entities",
     "handle_delete_posts",
     "handle_find_entities",
     "handle_get_entities",
+    "handle_manage_attributes",
+    "handle_manage_relations",
     "handle_update_entities",
     "handle_update_posts",
     # Types

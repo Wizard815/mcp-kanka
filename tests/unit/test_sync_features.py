@@ -140,6 +140,7 @@ class TestTimestampSupport:
             sync_info["newest_updated_at"] == "2023-08-20T16:45:00+00:00"
         )  # Bob's timestamp
         assert sync_info["total_count"] == 3
+        assert sync_info["last_page"] == 2
         assert sync_info["returned_count"] == 2
 
     @patch("mcp_kanka.operations.get_service")
@@ -159,7 +160,12 @@ class TestTimestampSupport:
 
         # Verify service was called with last_sync
         mock_service.list_entities.assert_called_with(
-            "character", page=1, limit=0, last_sync=last_sync_time, related=True
+            "character",
+            page=1,
+            limit=0,
+            last_sync=last_sync_time,
+            related=True,
+            tag_ids=None,
         )
 
 

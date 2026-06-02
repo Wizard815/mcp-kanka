@@ -1,17 +1,28 @@
 """Type definitions for the Kanka MCP server."""
 
-from typing import Literal, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 # Supported entity types
 EntityType = Literal[
+    "ability",
+    "attribute",
+    "bookmark",
+    "calendar",
     "character",
+    "conversation",
     "creature",
+    "dice_roll",
+    "event",
+    "family",
+    "journal",
     "location",
+    "map",
     "organization",
     "race",
     "note",
-    "journal",
     "quest",
+    "tag",
+    "timeline",
 ]
 
 
@@ -33,6 +44,7 @@ class FindEntitiesParams(TypedDict, total=False):
     name_fuzzy: bool | None
     type: str | None
     tags: list[str] | None
+    tag_id: list[int] | None
     date_range: DateRange | None
     include_full: bool | None
     page: int | None
@@ -49,6 +61,58 @@ class EntityInput(TypedDict):
     entry: str | None
     tags: list[str] | None
     is_hidden: bool | None
+    # Parent's global entity_id. Events: MCP PATCHes `events/{child_id}` with this `parent_id`.
+    parent_id: NotRequired[int | None]
+    # Location-specific: parent Location child_id (the Location module `id`, not an entity_id)
+    location_id: int | None
+    # Event-specific: calendar child id (calendars/{calendar.id}) and in-world date (events create)
+    calendar_id: NotRequired[int | None]
+    calendar_year: NotRequired[int | None]
+    calendar_month: NotRequired[int | None]
+    calendar_day: NotRequired[int | None]
+    # Event-specific: parent Event module id (events/{id}); resolved to global entity_id, then same as parent_id
+    event_parent_id: NotRequired[int | None]
+    # Event-specific: multiple linked location child ids
+    event_locations: NotRequired[list[int] | None]
+    # Character-specific
+    status: NotRequired[int | None]
+    title: NotRequired[str | None]
+    age: NotRequired[str | None]
+    sex: NotRequired[str | None]
+    pronouns: NotRequired[str | None]
+    race_id: NotRequired[int | None]
+    family_id: NotRequired[int | None]
+    is_dead: NotRequired[bool | None]
+    # Location-specific
+    parent_location_id: NotRequired[int | None]
+    is_map_private: NotRequired[bool | None]
+    # Creature-specific
+    creature_id: NotRequired[int | None]
+    is_extinct: NotRequired[bool | None]
+    locations: NotRequired[list[int] | None]
+    # Race-specific
+    # `race_id` is shared with character and used as parent-race id for races.
+    # Note-specific
+    note_id: NotRequired[int | None]
+    is_pinned: NotRequired[bool | None]
+    # Journal-specific
+    journal_id: NotRequired[int | None]
+    date: NotRequired[str | None]
+    character_id: NotRequired[int | None]
+    # Quest-specific
+    quest_id: NotRequired[int | None]
+    # Ability-specific
+    ability_id: NotRequired[int | None]
+    charges: NotRequired[int | None]
+    # Organisation-specific
+    organisation_id: NotRequired[int | None]
+    is_defunct: NotRequired[bool | None]
+    # Map-specific
+    map_id: NotRequired[int | None]
+    is_real: NotRequired[bool | None]
+    # Tag-specific
+    icon: NotRequired[str | None]
+    colour: NotRequired[str | None]
 
 
 class CreateEntitiesParams(TypedDict):
@@ -61,11 +125,62 @@ class EntityUpdate(TypedDict):
     """Update for an entity."""
 
     entity_id: int
-    name: str
+    name: str | None
     type: str | None
     entry: str | None
     tags: list[str] | None
     is_hidden: bool | None
+    # Parent's global entity_id. Events: MCP PATCHes `events/{child_id}` with this `parent_id`.
+    parent_id: NotRequired[int | None]
+    # Location-specific: parent Location child_id (the Location module `id`, not an entity_id)
+    location_id: int | None
+    # Event-specific: parent Event module id; resolved to global entity_id, then same as parent_id
+    event_parent_id: NotRequired[int | None]
+    # Event-specific: multiple linked location child ids
+    event_locations: NotRequired[list[int] | None]
+    # Event-specific: calendar child id (nullable). Include key with null to detach event from calendar.
+    calendar_id: NotRequired[int | None]
+    # Event-specific: in-world date on that calendar (updates PATCH events/{id})
+    calendar_year: NotRequired[int | None]
+    calendar_month: NotRequired[int | None]
+    calendar_day: NotRequired[int | None]
+    # Character-specific
+    status: NotRequired[int | None]
+    title: NotRequired[str | None]
+    age: NotRequired[str | None]
+    sex: NotRequired[str | None]
+    pronouns: NotRequired[str | None]
+    race_id: NotRequired[int | None]
+    family_id: NotRequired[int | None]
+    is_dead: NotRequired[bool | None]
+    # Location-specific
+    parent_location_id: NotRequired[int | None]
+    is_map_private: NotRequired[bool | None]
+    # Creature-specific
+    creature_id: NotRequired[int | None]
+    is_extinct: NotRequired[bool | None]
+    locations: NotRequired[list[int] | None]
+    # Note-specific
+    note_id: NotRequired[int | None]
+    is_pinned: NotRequired[bool | None]
+    # Journal-specific
+    journal_id: NotRequired[int | None]
+    date: NotRequired[str | None]
+    character_id: NotRequired[int | None]
+    # Quest-specific
+    quest_id: NotRequired[int | None]
+    # Ability-specific
+    ability_id: NotRequired[int | None]
+    charges: NotRequired[int | None]
+    # Organisation-specific
+    organisation_id: NotRequired[int | None]
+    is_defunct: NotRequired[bool | None]
+    # Map-specific
+    map_id: NotRequired[int | None]
+    is_real: NotRequired[bool | None]
+    # Tag-specific
+    icon: NotRequired[str | None]
+    colour: NotRequired[str | None]
 
 
 class UpdateEntitiesParams(TypedDict):
@@ -81,10 +196,13 @@ class GetEntitiesParams(TypedDict):
     include_posts: bool | None
 
 
-class DeleteEntitiesParams(TypedDict):
+class DeleteEntitiesParams(TypedDict, total=False):
     """Parameters for delete_entities tool."""
 
     entity_ids: list[int]
+    batch_size: int | None  # max concurrent deletes per wave; clamped 1–15, default 12
+    delay_ms: int | None  # pause between waves (ms); default 500, clamped 0–60000
+    dry_run: bool | None  # if true, show what would be deleted without deleting
 
 
 class PostInput(TypedDict):
@@ -107,7 +225,7 @@ class PostUpdate(TypedDict):
 
     entity_id: int
     post_id: int
-    name: str
+    name: str | None
     entry: str | None
     is_hidden: bool | None
 
@@ -155,6 +273,12 @@ class EntityFull(TypedDict, total=False):
     updated_at: str  # ISO 8601 timestamp
     match_score: float | None  # Only when name_fuzzy=true
     is_completed: bool | None  # For quests only
+    status: int | None  # Character/quest status code
+    title: str | None  # Character/location title
+    locations: list[int] | list[dict[str, Any]] | None  # Event-linked locations
+    icon: str | None  # Tag icon
+    colour: str | None  # Tag colour
+    parent_id: int | None  # Immediate parent global entity_id (events: from entity row)
     image: str | None  # Local path to the picture
     image_full: str | None  # URL to the full picture
     image_thumb: str | None  # URL to the thumbnail
@@ -184,6 +308,7 @@ class SyncInfo(TypedDict):
     request_timestamp: str  # When this request was made
     newest_updated_at: str | None  # Latest updated_at from returned entities
     total_count: int  # Total matching entities (for pagination)
+    last_page: int  # Last page number for pagination
     returned_count: int  # Number returned in this response
 
 
@@ -230,6 +355,12 @@ class GetEntityResult(TypedDict, total=False):
     success: bool
     error: str | None
     is_completed: bool | None  # For quests only
+    status: int | None  # Character/quest status code
+    title: str | None  # Character/location title
+    locations: list[int] | list[dict[str, Any]] | None  # Event-linked locations
+    icon: str | None  # Tag icon
+    colour: str | None  # Tag colour
+    parent_id: int | None  # Parent global entity_id (events included when nested)
     image: str | None  # Local path to the picture
     image_full: str | None  # URL to the full picture
     image_thumb: str | None  # URL to the thumbnail
@@ -243,6 +374,8 @@ class DeleteEntityResult(TypedDict):
     entity_id: int
     success: bool
     error: str | None
+    warning: NotRequired[str]
+    dry_run: NotRequired[bool]
 
 
 class CreatePostResult(TypedDict):
@@ -307,6 +440,7 @@ class KankaContext(TypedDict):
     terminology: KankaContextTerminology
     posts: str
     mentions: KankaContextMentions
+    entity_parent_nesting: str
     limitations: str
 
 
