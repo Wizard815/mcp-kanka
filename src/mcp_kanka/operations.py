@@ -514,11 +514,19 @@ class KankaOperations:
                 )
 
                 error_message: str | None = None
-                # note_id nesting is verified inside KankaService._set_entity_parent
-                # via PATCH notes/{child_id} + GET notes/{child_id} read-back.
-                # Skip the generic parent_id verification for notes.
-                _is_note_update = "note_id" in update
-                if success and not _is_note_update and (
+                # Journals and notes use PATCH {module}/{child_id} with parent_id (Kanka 3.10+).
+                # The API has propagation lag — parent_id may not echo in GET entities
+                # immediately after the PATCH. Skip verification; trust the 200 + 1s sleep
+                # in _set_entity_parent.
+                _uses_module_nesting = "note_id" in update
+                if success and "parent_id" in update and not _uses_module_nesting:
+                    try:
+                        _row = self.service._entity_row_minimal(entity_id)
+                        if _row.get("type") in ("journal", "note"):
+                            _uses_module_nesting = True
+                    except Exception:
+                        pass
+                if success and not _uses_module_nesting and (
                     "parent_id" in update
                     or "event_parent_id" in update
                     or "parent_location_id" in update
