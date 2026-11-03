@@ -298,3 +298,20 @@ class TestPostVisibility:
 
         # Should default to is_hidden=False
         assert result["is_hidden"] is False
+
+    def test_post_to_dict_admin_and_self_visibility_are_hidden(self):
+        """Admin (3), self (2) and self-admin (4) posts are hidden from players."""
+        mock_post = Mock()
+        mock_post.id = 51
+        mock_post.name = "DM Post"
+        mock_post.entry = None
+        for vid, hidden in [(1, False), (2, True), (3, True), (4, True), (5, False)]:
+            mock_post.visibility_id = vid
+            assert self.service._post_to_dict(mock_post)["is_hidden"] is hidden, vid
+
+    def test_post_dict_to_dict_admin_visibility_is_hidden(self):
+        """Raw API post dicts with admin visibility are reported hidden."""
+        result = self.service._post_dict_to_dict(
+            {"id": 52, "name": "DM Post", "visibility_id": 3, "entry": None}
+        )
+        assert result["is_hidden"] is True

@@ -12,7 +12,6 @@ from kanka.exceptions import KankaException
 from kanka.models import (
     Character,
     Creature,
-    Entity,
     Journal,
     Location,
     Note,
@@ -26,6 +25,22 @@ from .converter import ContentConverter
 from .types import EntityType
 
 logger = logging.getLogger(__name__)
+
+
+# Kanka post visibility_id: 1=all, 2=self, 3=admin, 4=self-admin, 5=members.
+# Only "all" and "members" are visible to players; every other value is
+# hidden from them, so report it as hidden.
+PLAYER_VISIBLE_POST_VISIBILITY = {1, 5}
+
+
+def post_visibility_is_hidden(visibility_id: Any) -> bool:
+    """Whether a post with this visibility_id is hidden from players."""
+    if visibility_id is None:
+        return False
+    try:
+        return int(visibility_id) not in PLAYER_VISIBLE_POST_VISIBILITY
+    except (TypeError, ValueError):
+        return True
 
 
 class KankaService:
@@ -406,9 +421,7 @@ class KankaService:
         except Exception as e:
             logger.warning(f"Failed to load entity_types cache: {e}")
 
-    def _get_entity_type_id(
-        self, entity_type: EntityType
-    ) -> int | None:
+    def _get_entity_type_id(self, entity_type: EntityType) -> int | None:
         self._load_entity_type_code_to_id_cache()
         api_code = self._normalize_entity_type_code(entity_type)
         return self._entity_type_code_to_id_cache.get(api_code)
@@ -492,7 +505,9 @@ class KankaService:
 
             if not found_entity:
                 if _allow_child_id_fallback:
-                    resolved_entity_id = self._resolve_entity_id_from_child_id(entity_id)
+                    resolved_entity_id = self._resolve_entity_id_from_child_id(
+                        entity_id
+                    )
                     if (
                         resolved_entity_id is not None
                         and resolved_entity_id != entity_id
@@ -514,9 +529,7 @@ class KankaService:
             entity_type = found_entity.get("type") or found_entity.get("entity_type")
 
             # Normalize to MCP/internal entity_type codes
-            our_type = (
-                "organization" if entity_type == "organisation" else entity_type
-            )
+            our_type = "organization" if entity_type == "organisation" else entity_type
 
             from typing import get_args
 
@@ -564,13 +577,9 @@ class KankaService:
                     if manager_name:
                         manager = getattr(self.client, manager_name)
                         posts = manager.list_posts(entity_id, limit=100)
-                        result["posts"] = [
-                            self._post_to_dict(post) for post in posts
-                        ]
+                        result["posts"] = [self._post_to_dict(post) for post in posts]
                 except Exception as e:
-                    logger.warning(
-                        f"Failed to get posts for entity {entity_id}: {e}"
-                    )
+                    logger.warning(f"Failed to get posts for entity {entity_id}: {e}")
                     result["posts"] = []
 
             # SDK module objects often omit entity-level nesting; merge from /entities payload.
@@ -739,7 +748,9 @@ class KankaService:
                     )
                 elif entity_type == "note" and note_id is not None:
                     # Kanka breaking change: nesting via PATCH entities/{id} parent_id.
-                    nest_parent_global = self.module_child_id_to_global_entity("note", note_id)
+                    nest_parent_global = self.module_child_id_to_global_entity(
+                        "note", note_id
+                    )
                 elif entity_type == "journal" and journal_id is not None:
                     nest_parent_global = self.module_child_id_to_global_entity(
                         "journal", journal_id
@@ -1086,14 +1097,14 @@ class KankaService:
                 )
             elif entity_type == "map" and map_id is not None:
                 apply_entity_parent = True
-                entity_parent_val = self.module_child_id_to_global_entity(
-                    "map", map_id
-                )
+                entity_parent_val = self.module_child_id_to_global_entity("map", map_id)
             elif entity_type == "note" and note_id is not None:
                 apply_entity_parent = True
                 # Kanka breaking change: nesting now via PATCH entities/{id} parent_id.
                 # note_id is the parent's module id; convert to global entity_id.
-                entity_parent_val = self.module_child_id_to_global_entity("note", note_id)
+                entity_parent_val = self.module_child_id_to_global_entity(
+                    "note", note_id
+                )
             elif entity_type == "journal" and journal_id is not None:
                 apply_entity_parent = True
                 entity_parent_val = self.module_child_id_to_global_entity(
@@ -1523,8 +1534,10 @@ class KankaService:
         endpoint = f"maps/{map_id}/map_markers/{marker_id}"
         body = dict(payload)
         body.setdefault("map_id", map_id)
-        if "entity_id" in body and body.get("entity_id") is None and not body.get(
-            "name"
+        if (
+            "entity_id" in body
+            and body.get("entity_id") is None
+            and not body.get("name")
         ):
             current = self.get_map_marker(map_id, marker_id)
             nm = current.get("name")
@@ -1568,9 +1581,7 @@ class KankaService:
         endpoint = f"entities/{entity_id}/relations/{relation_id}"
         return self.client._request("PATCH", endpoint, json=payload)
 
-    def delete_relation(
-        self, entity_id: int, relation_id: int
-    ) -> dict[str, Any]:
+    def delete_relation(self, entity_id: int, relation_id: int) -> dict[str, Any]:
         """Delete a relation under an entity."""
         endpoint = f"entities/{entity_id}/relations/{relation_id}"
         self.client._request("DELETE", endpoint)
@@ -1790,9 +1801,7 @@ class KankaService:
         endpoint = f"timelines/{timeline_id}/eras/{era_id}"
         return self.client._request("PATCH", endpoint, json=payload)
 
-    def delete_timeline_era(
-        self, timeline_id: int, era_id: int
-    ) -> dict[str, Any]:
+    def delete_timeline_era(self, timeline_id: int, era_id: int) -> dict[str, Any]:
         """Delete a timeline era."""
         endpoint = f"timelines/{timeline_id}/eras/{era_id}"
         self.client._request("DELETE", endpoint)
@@ -2009,7 +2018,9 @@ class KankaService:
             if module_ep and isinstance(child_mod_id, int) and et != "location":
                 # Kanka 3.10+: use module endpoint for all non-location types
                 wr = self.raw_request(
-                    "PATCH", f"{module_ep}/{child_mod_id}", json={"parent_id": parent_id}
+                    "PATCH",
+                    f"{module_ep}/{child_mod_id}",
+                    json={"parent_id": parent_id},
                 )
             else:
                 wr = self.raw_request(
@@ -2063,9 +2074,10 @@ class KankaService:
                     if parent_id is not None:
 
                         def _location_patch_trust(loc_resp: dict[str, Any]) -> bool:
-                            if self._parse_parent_id_from_payload(
-                                loc_resp.get("data")
-                            ) == parent_id:
+                            if (
+                                self._parse_parent_id_from_payload(loc_resp.get("data"))
+                                == parent_id
+                            ):
                                 return True
                             time.sleep(0.05)
                             if matches():
@@ -2140,7 +2152,9 @@ class KankaService:
     # Entity attribute properties
     # ----------------------------
     @staticmethod
-    def _normalize_attribute_checkbox_values(response: dict[str, Any]) -> dict[str, Any]:
+    def _normalize_attribute_checkbox_values(
+        response: dict[str, Any],
+    ) -> dict[str, Any]:
         """Normalize checkbox attribute values (API may return bool or legacy strings)."""
         rows = response.get("data")
         if not isinstance(rows, list):
@@ -2188,9 +2202,7 @@ class KankaService:
         endpoint = f"entities/{entity_id}/attributes/{attribute_id}"
         return self.raw_request("PATCH", endpoint, json=payload)
 
-    def delete_attribute(
-        self, entity_id: int, attribute_id: int
-    ) -> dict[str, Any]:
+    def delete_attribute(self, entity_id: int, attribute_id: int) -> dict[str, Any]:
         endpoint = f"entities/{entity_id}/attributes/{attribute_id}"
         self.client._request("DELETE", endpoint)
         return {"success": True}
@@ -2207,9 +2219,7 @@ class KankaService:
         body = {"tag_id": tag_id}
         return self.raw_request("POST", endpoint, json=body)
 
-    def remove_entity_tag(
-        self, entity_id: int, entity_tag_id: int
-    ) -> dict[str, Any]:
+    def remove_entity_tag(self, entity_id: int, entity_tag_id: int) -> dict[str, Any]:
         endpoint = f"entities/{entity_id}/entity_tags/{entity_tag_id}"
         self.client._request("DELETE", endpoint)
         return {"success": True}
@@ -2244,9 +2254,7 @@ class KankaService:
         body.setdefault("entity_id", entity_id)
         return self.raw_request("PATCH", endpoint, json=body)
 
-    def delete_inventory(
-        self, entity_id: int, inventory_id: int
-    ) -> dict[str, Any]:
+    def delete_inventory(self, entity_id: int, inventory_id: int) -> dict[str, Any]:
         # Docs use a different path segment: entity_inventory.
         endpoint = f"entities/{entity_id}/entity_inventory/{inventory_id}"
         self.client._request("DELETE", endpoint)
@@ -2285,9 +2293,7 @@ class KankaService:
         """Upload/replace an entity image using a local file path."""
         # Build absolute URL because Kanka requires multipart/form-data.
         endpoint = f"entities/{entity_id}/image"
-        url = (
-            f"{self.client.BASE_URL}/campaigns/{self.client.campaign_id}/{endpoint}"
-        )
+        url = f"{self.client.BASE_URL}/campaigns/{self.client.campaign_id}/{endpoint}"
 
         filename = os.path.basename(file_path) or "upload"
         with open(file_path, "rb") as f:
@@ -2302,9 +2308,7 @@ class KankaService:
     ) -> dict[str, Any]:
         """Unlink an entity's image (won't delete from gallery)."""
         endpoint = f"entities/{entity_id}/image"
-        url = (
-            f"{self.client.BASE_URL}/campaigns/{self.client.campaign_id}/{endpoint}"
-        )
+        url = f"{self.client.BASE_URL}/campaigns/{self.client.campaign_id}/{endpoint}"
         resp = self.client.session.request(
             "DELETE",
             url,
@@ -2341,20 +2345,14 @@ class KankaService:
         calendar_weather_id: int,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        endpoint = (
-            f"calendars/{calendar_id}/calendar_weather/{calendar_weather_id}"
-        )
+        endpoint = f"calendars/{calendar_id}/calendar_weather/{calendar_weather_id}"
         return self.client._request("PATCH", endpoint, json=payload)
 
     def delete_calendar_weather(
         self, calendar_id: int, calendar_weather_id: int
     ) -> dict[str, Any]:
-        endpoint = (
-            f"calendars/{calendar_id}/calendar_weather/{calendar_weather_id}"
-        )
-        url = (
-            f"{self.client.BASE_URL}/campaigns/{self.client.campaign_id}/{endpoint}"
-        )
+        endpoint = f"calendars/{calendar_id}/calendar_weather/{calendar_weather_id}"
+        url = f"{self.client.BASE_URL}/campaigns/{self.client.campaign_id}/{endpoint}"
         resp = self.client.session.request("DELETE", url)
         if not resp.text:
             return {"success": True}
@@ -2372,7 +2370,9 @@ class KankaService:
         endpoint = "calendars"
         return self.raw_request("POST", endpoint, json=payload)
 
-    def update_calendar(self, calendar_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+    def update_calendar(
+        self, calendar_id: int, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         endpoint = f"calendars/{calendar_id}"
         return self.raw_request("PATCH", endpoint, json=payload)
 
@@ -2454,9 +2454,7 @@ class KankaService:
         self, calendar_id: int, calendar_event_id: int
     ) -> dict[str, Any]:
         endpoint = f"calendars/{calendar_id}/reminders/{calendar_event_id}"
-        url = (
-            f"{self.client.BASE_URL}/campaigns/{self.client.campaign_id}/{endpoint}"
-        )
+        url = f"{self.client.BASE_URL}/campaigns/{self.client.campaign_id}/{endpoint}"
         resp = self.client.session.request("DELETE", url)
         if not resp.text:
             return {"success": True}
@@ -2477,7 +2475,9 @@ class KankaService:
         endpoint = f"entities/{entity_id}/reminders/{reminder_id}"
         return self.raw_request("PATCH", endpoint, json=payload)
 
-    def delete_entity_reminder(self, entity_id: int, reminder_id: int) -> dict[str, Any]:
+    def delete_entity_reminder(
+        self, entity_id: int, reminder_id: int
+    ) -> dict[str, Any]:
         endpoint = f"entities/{entity_id}/reminders/{reminder_id}"
         url = f"{self.client.BASE_URL}/campaigns/{self.client.campaign_id}/{endpoint}"
         resp = self.client.session.request("DELETE", url)
@@ -2606,9 +2606,7 @@ class KankaService:
 
         return tag_names
 
-    def _entity_to_dict(
-        self, entity: Any, entity_type: str
-    ) -> dict[str, Any]:
+    def _entity_to_dict(self, entity: Any, entity_type: str) -> dict[str, Any]:
         """
         Convert entity object to dictionary.
 
@@ -2702,12 +2700,7 @@ class KankaService:
             "name": post.get("name"),
         }
 
-        visibility_id = post.get("visibility_id")
-        if visibility_id is not None:
-            # visibility_id 2 = admin only (hidden from players)
-            result["is_hidden"] = visibility_id == 2
-        else:
-            result["is_hidden"] = False
+        result["is_hidden"] = post_visibility_is_hidden(post.get("visibility_id"))
 
         entry_html = post.get("entry")
         if entry_html:
@@ -2757,7 +2750,11 @@ class KankaService:
         posts = entity.get("posts")
         if isinstance(posts, list) and posts is not None:
             result["posts"] = [
-                self._post_dict_to_dict(p) if isinstance(p, dict) else self._post_to_dict(p)
+                (
+                    self._post_dict_to_dict(p)
+                    if isinstance(p, dict)
+                    else self._post_to_dict(p)
+                )
                 for p in posts
             ]
 
@@ -2809,13 +2806,9 @@ class KankaService:
 
         # Handle visibility - translate visibility_id to is_hidden
         # Posts use visibility_id field
-        visibility_id = getattr(post, "visibility_id", None)
-        if visibility_id is not None:
-            # visibility_id 2 = admin only (hidden from players)
-            result["is_hidden"] = visibility_id == 2
-        else:
-            # Default to visible if no visibility_id
-            result["is_hidden"] = False
+        result["is_hidden"] = post_visibility_is_hidden(
+            getattr(post, "visibility_id", None)
+        )
 
         # Convert HTML entry to Markdown
         if hasattr(post, "entry") and post.entry:
