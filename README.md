@@ -32,7 +32,7 @@ This package is designed specifically to serve the needs of [Teghrim](https://gi
 
 ## Requirements
 
-- Python 3.10 or higher (3.13.5 recommended)
+- Python 3.12 or higher (CI tests Python 3.12–3.15), matching python-kanka’s minimum requirement
 - Kanka API token and campaign ID
 
 ## Installation
@@ -44,7 +44,7 @@ pip install mcp-kanka
 
 ### From Source (using uv)
 ```bash
-git clone https://github.com/ervwalter/mcp-kanka.git
+git clone https://github.com/twistymaze/mcp-kanka.git
 cd mcp-kanka
 uv sync --all-groups
 uv pip install -e .
@@ -52,7 +52,7 @@ uv pip install -e .
 
 ### From Source (using pip)
 ```bash
-git clone https://github.com/ervwalter/mcp-kanka.git
+git clone https://github.com/twistymaze/mcp-kanka.git
 cd mcp-kanka
 pip install -e .
 ```
@@ -317,7 +317,7 @@ result = await check_entity_updates(
 
 ```bash
 # Clone the repository
-git clone https://github.com/ervwalter/mcp-kanka.git
+git clone https://github.com/twistymaze/mcp-kanka.git
 cd mcp-kanka
 
 # Install development dependencies

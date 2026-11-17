@@ -61,7 +61,7 @@ logger = logging.getLogger(__name__)
 app: Server[None] = Server("mcp-kanka")
 
 
-@app.list_resources()  # type: ignore[no-untyped-call, misc]
+@app.list_resources()  # type: ignore[no-untyped-call, untyped-decorator]
 async def list_resources() -> list[types.Resource]:
     """List available resources."""
     return [
@@ -74,7 +74,7 @@ async def list_resources() -> list[types.Resource]:
     ]
 
 
-@app.read_resource()  # type: ignore[no-untyped-call, misc]
+@app.read_resource()  # type: ignore[no-untyped-call, untyped-decorator]
 async def read_resource(uri: str) -> str:
     """Read a resource by URI."""
     if uri == "kanka://context":
@@ -82,7 +82,7 @@ async def read_resource(uri: str) -> str:
     raise ValueError(f"Unknown resource: {uri}")
 
 
-@app.list_tools()  # type: ignore[no-untyped-call, misc]
+@app.list_tools()  # type: ignore[no-untyped-call, untyped-decorator]
 async def list_tools() -> list[types.Tool]:
     """List available tools."""
     return [
@@ -1422,7 +1422,7 @@ async def list_tools() -> list[types.Tool]:
     ]
 
 
-@app.call_tool()  # type: ignore[misc]
+@app.call_tool()  # type: ignore[untyped-decorator]
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextContent]:
     """Handle tool calls."""
     logger.info(f"Tool called: {name} with arguments: {arguments}")

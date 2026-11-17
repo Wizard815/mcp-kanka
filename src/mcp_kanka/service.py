@@ -2620,7 +2620,7 @@ class KankaService:
         if isinstance(entity, dict):
             return self._entity_dict_to_dict(entity, entity_type)
 
-        result = {
+        result: dict[str, Any] = {
             "id": entity.id,
             "entity_id": entity.entity_id,
             "name": entity.name,
